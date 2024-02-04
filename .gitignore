@@ -1,1 +1,4 @@
 *.dat
+mount.sh
+unmount.sh
+fatman
