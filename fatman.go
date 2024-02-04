@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -87,7 +88,7 @@ func main() {
 	filepath := flag.Arg(0)
 
 	bpb, ext16, ext32, info, err := readReservedSector(filepath)
-	checkerr("reading reserved sector", err)
+	checkerr("", err)
 
 	if printReserved {
 		superprint(bpb)
@@ -110,6 +111,11 @@ func readReservedSector(filepath string) (bpb BPB, ext16 PBPExt16, ext32 PBPExt3
 	defer file.Close()
 
 	if err = binary.Read(file, binary.LittleEndian, &bpb); err != nil {
+		return
+	}
+
+	if !doILookFAT(bpb) {
+		err = errors.New("not a msdos FAT FS")
 		return
 	}
 
@@ -149,9 +155,26 @@ func readReservedSector(filepath string) (bpb BPB, ext16 PBPExt16, ext32 PBPExt3
 	return
 }
 
+func doILookFAT(bpb BPB) bool {
+	// checks if it's an actual FAT filesystem
+	switch bpb.JumpBoot[0] {
+	case 0xEB:
+		fallthrough
+	case 0xE9:
+		return true
+	}
+
+	return false
+}
+
 func checkerr(msg string, err error) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %s", msg, err.Error())
+		if msg == "" {
+			fmt.Fprintln(os.Stderr, err.Error())
+		} else {
+			fmt.Fprintf(os.Stderr, "%s: %s\n", msg, err.Error())
+		}
+
 		os.Exit(-1)
 	}
 }
