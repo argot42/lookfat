@@ -160,6 +160,7 @@ func readReservedSector(filepath string) (bpb BPB, ext16 BPBExt16, ext32 BPBExt3
 		if err = binary.Read(file, binary.LittleEndian, &ext32); err != nil {
 			return
 		}
+		info.FATSectors = ext32.FATsz32
 	}
 
 	info.DataSectors = info.TotalSectors - uint32(bpb.ReservedSectorCount) + uint32(bpb.NFATs)*info.FATSectors + uint32(info.RootDirSectors)
