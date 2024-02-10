@@ -26,7 +26,7 @@ type BPB struct {
 	TotalSectors32      uint32
 }
 
-type PBPExt16 struct {
+type BPBExt16 struct {
 	DriveNumber   uint8
 	Reserved      uint8
 	BootSignature uint8
@@ -37,7 +37,7 @@ type PBPExt16 struct {
 	SignatureWord [2]uint8 `print:"hex"`
 }
 
-type PBPExt32 struct {
+type BPBExt32 struct {
 	FATsz32       uint32 // number of sectors per FAT (FAT32 only)
 	ExtFlags      [2]uint8
 	FSVer         [2]uint8
@@ -73,10 +73,9 @@ const (
 const RootEntrySize = 32
 
 func main() {
-	var printReserved bool
 
-	flag.BoolVar(&printReserved, "reserved", false, "print reserved region")
-	flag.BoolVar(&printReserved, "r", false, "print reserved region")
+	printReserved := flag.Bool("r", false, "print reserved region")
+	printType := flag.Bool("t", false, "detect FAT size")
 
 	flag.Parse()
 
@@ -90,7 +89,7 @@ func main() {
 	bpb, ext16, ext32, info, err := readReservedSector(filepath)
 	checkerr("", err)
 
-	if printReserved {
+	if *printReserved {
 		superprint(bpb)
 
 		switch info.Type {
@@ -101,9 +100,19 @@ func main() {
 		}
 	}
 
+	if *printType {
+		switch info.Type {
+		case FAT12:
+			fmt.Println("fat12")
+		case FAT16:
+			fmt.Println("fat16")
+		case FAT32:
+			fmt.Println("fat32")
+		}
+	}
 }
 
-func readReservedSector(filepath string) (bpb BPB, ext16 PBPExt16, ext32 PBPExt32, info FATInfo, err error) {
+func readReservedSector(filepath string) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo, err error) {
 	file, err := os.Open(filepath)
 	if err != nil {
 		return
