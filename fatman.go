@@ -76,8 +76,14 @@ func main() {
 
 	printReserved := flag.Bool("r", false, "print reserved region")
 	printType := flag.Bool("t", false, "detect FAT size")
+	printInfo := flag.Bool("i", false, "print fs info")
 
 	flag.Parse()
+
+	if !*printReserved && !*printType && !*printInfo {
+		flag.Usage()
+		os.Exit(1)
+	}
 
 	if flag.NArg() == 0 {
 		flag.Usage()
@@ -109,6 +115,14 @@ func main() {
 		case FAT32:
 			fmt.Println("fat32")
 		}
+	}
+
+	if *printInfo {
+		fmt.Println("FAT Region Sectors:", info.FATSectors)
+		fmt.Println("Root Region Sectors:", info.RootDirSectors)
+		fmt.Println("Data Region Sectors:", info.DataSectors)
+		fmt.Println("Total Sectors:", info.TotalSectors)
+		fmt.Println("Cluster Count:", info.ClusterCount)
 	}
 }
 
