@@ -57,6 +57,7 @@ type BPBExt32 struct {
 
 type FATInfo struct {
 	Type           uint8
+	Warning        string
 	FATSectors     uint32
 	RootDirSectors uint32
 	DataSectors    uint32
@@ -96,34 +97,47 @@ func main() {
 	checkerr("", err)
 
 	if *printReserved {
-		superprint(bpb)
-
-		switch info.Type {
-		case FAT12, FAT16:
-			superprint(ext16)
-		case FAT32:
-			superprint(ext32)
-		}
+		pReserved(bpb, ext16, ext32, info)
 	}
-
 	if *printType {
-		switch info.Type {
-		case FAT12:
-			fmt.Println("fat12")
-		case FAT16:
-			fmt.Println("fat16")
-		case FAT32:
-			fmt.Println("fat32")
-		}
+		pType(info)
 	}
-
 	if *printInfo {
-		fmt.Println("FAT Region Sectors:", info.FATSectors)
-		fmt.Println("Root Region Sectors:", info.RootDirSectors)
-		fmt.Println("Data Region Sectors:", info.DataSectors)
-		fmt.Println("Total Sectors:", info.TotalSectors)
-		fmt.Println("Cluster Count:", info.ClusterCount)
+		pInfo(info)
 	}
+}
+
+func pReserved(bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo) {
+	superprint(bpb)
+
+	switch info.Type {
+	case FAT12, FAT16:
+		superprint(ext16)
+	case FAT32:
+		superprint(ext32)
+	}
+}
+
+func pType(info FATInfo) {
+	switch info.Type {
+	case FAT12:
+		fmt.Println("fat12")
+	case FAT16:
+		fmt.Println("fat16")
+	case FAT32:
+		fmt.Println("fat32")
+	}
+}
+
+func pInfo(info FATInfo) {
+	fmt.Printf(`FAT Region Sectors: %d
+Root Region Sectors: %d
+Data Region Sectors: %d
+Total Sectors: %d
+Cluster Count: %d
+-----------------------------------
+Warn: %s
+`, info.FATSectors, info.RootDirSectors, info.DataSectors, info.TotalSectors, info.ClusterCount, info.Warning)
 }
 
 func readReservedSector(filepath string) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo, err error) {
@@ -144,6 +158,18 @@ func readReservedSector(filepath string) (bpb BPB, ext16 BPBExt16, ext32 BPBExt3
 
 	info.RootDirSectors = (uint32(bpb.RootEntryCount)*RootEntrySize + uint32(bpb.BytesPerSector) - 1) / uint32(bpb.BytesPerSector)
 
+	// root entry count greater than 0 usually means FAT12/16
+	if bpb.RootEntryCount != 0 {
+		if err = binary.Read(file, binary.LittleEndian, &ext16); err != nil {
+			return
+		}
+	} else {
+		if err = binary.Read(file, binary.LittleEndian, &ext32); err != nil {
+			return
+		}
+		info.Type = FAT32
+	}
+
 	if bpb.TotalSectors16 != 0 {
 		info.TotalSectors = uint32(bpb.TotalSectors16)
 	} else {
@@ -152,28 +178,41 @@ func readReservedSector(filepath string) (bpb BPB, ext16 BPBExt16, ext32 BPBExt3
 
 	if bpb.FATsz16 != 0 {
 		info.FATSectors = uint32(bpb.FATsz16)
-
-		if err = binary.Read(file, binary.LittleEndian, &ext16); err != nil {
-			return
-		}
 	} else {
-		if err = binary.Read(file, binary.LittleEndian, &ext32); err != nil {
-			return
-		}
 		info.FATSectors = ext32.FATsz32
 	}
 
-	info.DataSectors = info.TotalSectors - uint32(bpb.ReservedSectorCount) + uint32(bpb.NFATs)*info.FATSectors + uint32(info.RootDirSectors)
+	// this formula is used to get the total count of clusters in the partition
+	// then use it to determinate the FAT type as follows
+	// if clusterCount < 4085       = FAT12
+	// else if clusterCount < 65525 = FAT16
+	// else                         = FAT32
+	// for some reason you can create different FAT types disregarding cluster count when using mkfs.fat on linux
+	// that's why I tried another method to figure out FAT type checking root dir sector count
+	// I'm not sure if it is correct
+	info.DataSectors = info.TotalSectors - (uint32(bpb.ReservedSectorCount) + uint32(bpb.NFATs)*info.FATSectors + uint32(info.RootDirSectors))
 
 	info.ClusterCount = info.DataSectors / uint32(bpb.SectorPerCluster)
 
 	switch ccnt := info.ClusterCount; {
 	case ccnt < 4085:
-		info.Type = FAT12
+		if info.Type == 0 {
+			info.Type = FAT12
+		} else {
+			info.Warning = fmt.Sprintf("according to my calculations FAT type is %d but the cluster count point to FAT12", info.Type)
+		}
 	case ccnt < 65525:
-		info.Type = FAT16
+		if info.Type == 0 {
+			info.Type = FAT16
+		} else {
+			info.Warning = fmt.Sprintf("according to my calculations FAT type is %d but the cluster count point to FAT16", info.Type)
+		}
 	default:
-		info.Type = FAT32
+		if info.Type == 0 {
+			info.Type = FAT32
+		} else {
+			info.Warning = fmt.Sprintf("according to my calculations FAT type is %d but the cluster count point to FAT32", info.Type)
+		}
 	}
 
 	return
