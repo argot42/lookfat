@@ -74,7 +74,6 @@ const (
 const RootEntrySize = 32
 
 func main() {
-
 	printReserved := flag.Bool("r", false, "print reserved region")
 	printType := flag.Bool("t", false, "detect FAT size")
 	printInfo := flag.Bool("i", false, "print fs info")
@@ -121,11 +120,11 @@ func pReserved(bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo) {
 func pType(info FATInfo) {
 	switch info.Type {
 	case FAT12:
-		fmt.Println("fat12")
+		fmt.Println("FAT12")
 	case FAT16:
-		fmt.Println("fat16")
+		fmt.Println("FAT16")
 	case FAT32:
-		fmt.Println("fat32")
+		fmt.Println("FAT32")
 	}
 }
 
@@ -163,10 +162,11 @@ func readReservedSector(filepath string) (bpb BPB, ext16 BPBExt16, ext32 BPBExt3
 		if err = binary.Read(file, binary.LittleEndian, &ext16); err != nil {
 			return
 		}
-	} else {
+	} else { // if root entry count is 0 the type is FAT32
 		if err = binary.Read(file, binary.LittleEndian, &ext32); err != nil {
 			return
 		}
+		// set fat type
 		info.Type = FAT32
 	}
 
@@ -194,6 +194,7 @@ func readReservedSector(filepath string) (bpb BPB, ext16 BPBExt16, ext32 BPBExt3
 
 	info.ClusterCount = info.DataSectors / uint32(bpb.SectorPerCluster)
 
+	// set FAT type by cluster count or set a warning if the type mismatch
 	switch ccnt := info.ClusterCount; {
 	case ccnt < 4085:
 		if info.Type == 0 {
