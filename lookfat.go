@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	//"time"
 )
 
 type BPB struct {
@@ -58,11 +59,55 @@ type BPBExt32 struct {
 type FATInfo struct {
 	Type           uint8
 	Warning        string
+	FATNumber      uint32
 	FATSectors     uint32
+	FATOffset      uint32
 	RootDirSectors uint32
+	RootDirOffset  uint32
 	DataSectors    uint32
+	DataOffset     uint32
 	TotalSectors   uint32
 	ClusterCount   uint32
+}
+
+type DirEntry struct {
+	Name    [11]uint8 `print:"str"`
+	Attr    uint8     `print:"hex"`
+	NTRes   uint8     // reserved must be 0?
+	CTTenth uint8     // creation time. count tenths of a second 0 <= CCTenth <= 199
+	CTime   uint16    // creation time. granularity is 2s
+	CDate   uint16    // creation date
+	// last accessed date.
+	//This field must be updated on file modification (write operation) and the date value must be equal to WDate.
+	LDate uint16
+	// High word of first data cluster number for file/directory described by this entry.
+	// Only valid for volumes formatted FAT32. Must be set to 0 on volumes formatted FAT12/FAT16.
+	FirstClusterHI uint16
+	WTime          uint16 // write time (must be equal to CTime at creation)
+	WDate          uint16 // write date (must be equal to CDate at creation)
+	FirstClusterLO uint16 // Low word of first data cluster number for file/dir described by this entry
+	FileSize       uint32
+}
+
+type DirEntryLong struct {
+	Ordinal uint8 `print:"hex"` // order of the long name entry. the contents of the fields must be masked with 0x40
+	// for the last long directory name in the set
+	Name1          [10]uint8 `print:"str"` // first 5 chars in name
+	Attr           uint8     `print:"hex"`
+	Type           uint8     // Reserved (set to 0)
+	Checksum       uint8
+	Name2          [12]uint8 `print:"str"` // 6 more chars in name
+	FirstClusterLO uint16    // must be set to 0
+	Name3          [4]uint8  `print:"str"` // last 2 chars in name
+}
+
+type EntryInfo struct {
+	Name string
+	Attr uint8
+	//Crt      time.Time
+	//Mod      time.Time
+	Location uint32
+	Size     uint32
 }
 
 const (
@@ -75,12 +120,13 @@ const RootEntrySize = 32
 
 func main() {
 	printReserved := flag.Bool("r", false, "print reserved region")
+	printRoot := flag.Bool("d", false, "print root directory region")
 	printType := flag.Bool("t", false, "detect FAT size")
 	printInfo := flag.Bool("i", false, "print fs info")
 
 	flag.Parse()
 
-	if !*printReserved && !*printType && !*printInfo {
+	if !*printReserved && !*printType && !*printInfo && !*printRoot {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -92,11 +138,20 @@ func main() {
 
 	filepath := flag.Arg(0)
 
-	bpb, ext16, ext32, info, err := readReservedSector(filepath)
+	file, err := os.Open(filepath)
 	checkerr("", err)
+	defer file.Close()
+
+	bpb, ext16, ext32, info, err := readReservedSector(file)
+	checkerr("", err)
+
+	root, err := readRootDirSector(file, info)
 
 	if *printReserved {
 		pReserved(bpb, ext16, ext32, info)
+	}
+	if *printRoot {
+		pRoot(info, root)
 	}
 	if *printType {
 		pType(info)
@@ -117,6 +172,10 @@ func pReserved(bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo) {
 	}
 }
 
+func pRoot(info FATInfo, root []EntryInfo) {
+	fmt.Println(root)
+}
+
 func pType(info FATInfo) {
 	switch info.Type {
 	case FAT12:
@@ -130,22 +189,29 @@ func pType(info FATInfo) {
 
 func pInfo(info FATInfo) {
 	fmt.Printf(`FAT Region Sectors: %d
+FAT Region offset: %d
 Root Region Sectors: %d
+Root Region offset: %d
 Data Region Sectors: %d
+Data Region offset: %d
 Total Sectors: %d
 Cluster Count: %d
 -----------------------------------
 Warn: %s
-`, info.FATSectors, info.RootDirSectors, info.DataSectors, info.TotalSectors, info.ClusterCount, info.Warning)
+`,
+		info.FATSectors,
+		info.FATOffset,
+		info.RootDirSectors,
+		info.RootDirOffset,
+		info.DataSectors,
+		info.DataOffset,
+		info.TotalSectors,
+		info.ClusterCount,
+		info.Warning,
+	)
 }
 
-func readReservedSector(filepath string) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo, err error) {
-	file, err := os.Open(filepath)
-	if err != nil {
-		return
-	}
-	defer file.Close()
-
+func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo, err error) {
 	if err = binary.Read(file, binary.LittleEndian, &bpb); err != nil {
 		return
 	}
@@ -170,12 +236,17 @@ func readReservedSector(filepath string) (bpb BPB, ext16 BPBExt16, ext32 BPBExt3
 		info.Type = FAT32
 	}
 
+	// set number of FAT entries
+	info.FATNumber = uint32(bpb.NFATs)
+
+	// calculate total number of sectors for volume
 	if bpb.TotalSectors16 != 0 {
 		info.TotalSectors = uint32(bpb.TotalSectors16)
 	} else {
 		info.TotalSectors = bpb.TotalSectors32
 	}
 
+	// calculate number of sectors per FAT entry
 	if bpb.FATsz16 != 0 {
 		info.FATSectors = uint32(bpb.FATsz16)
 	} else {
@@ -214,6 +285,140 @@ func readReservedSector(filepath string) (bpb BPB, ext16 BPBExt16, ext32 BPBExt3
 		} else {
 			info.Warning = fmt.Sprintf("according to my calculations FAT type is %d but the cluster count point to FAT32", info.Type)
 		}
+	}
+
+	// calculate offsets
+	switch info.Type {
+	case FAT12, FAT16:
+		info.RootDirOffset = (uint32(bpb.ReservedSectorCount) + info.FATNumber*info.FATSectors) * uint32(bpb.BytesPerSector)
+	}
+
+	info.FATOffset = uint32(bpb.ReservedSectorCount) * uint32(bpb.BytesPerSector)
+
+	return
+}
+
+func readRootDirSector(file *os.File, info FATInfo) (root []EntryInfo, err error) {
+	if _, err = file.Seek(int64(info.RootDirOffset), 0); err != nil {
+		return
+	}
+
+OUT:
+	for {
+		if _, err = file.Seek(11, 1); err != nil {
+			return
+		}
+
+		var attr uint8
+		if err = binary.Read(file, binary.LittleEndian, &attr); err != nil {
+			return
+		}
+
+		if _, err = file.Seek(-12, 1); err != nil {
+			return
+		}
+
+		var entryInfo EntryInfo
+
+		switch attr {
+		case 0x0: // end of entries
+			break OUT
+		case 0x28, 0x8: // volume id
+			var entry DirEntry
+			if err = binary.Read(file, binary.LittleEndian, &entry); err != nil {
+				return
+			}
+
+			var name []byte
+			for _, v := range entry.Name {
+				name = append(name, v)
+			}
+
+			entryInfo = EntryInfo{
+				Name: string(name),
+				Attr: entry.Attr,
+			}
+
+		case 0xf: // long filename
+			var entry DirEntryLong
+			var parts [][]byte
+
+			for {
+				if err = binary.Read(file, binary.LittleEndian, &entry); err != nil {
+					return
+				}
+
+				var p []byte
+
+				for _, v := range entry.Name1 {
+					if v == 0xff {
+						break
+					}
+					p = append(p, v)
+				}
+
+				for _, v := range entry.Name2 {
+					if v == 0xff {
+						break
+					}
+					p = append(p, v)
+				}
+
+				for _, v := range entry.Name3 {
+					if v == 0xff {
+						break
+					}
+					p = append(p, v)
+				}
+
+				parts = append(parts, p)
+
+				if entry.Ordinal&0x3f == 1 {
+					break
+				}
+			}
+
+			var name []byte
+			for i := len(parts) - 1; i >= 0; i-- {
+				for _, p := range parts[i] {
+					name = append(name, p)
+				}
+			}
+
+			var short DirEntry
+			if err = binary.Read(file, binary.LittleEndian, &short); err != nil {
+				return
+			}
+
+			superprint(short)
+
+			entryInfo = EntryInfo{
+				Name:     string(name),
+				Attr:     short.Attr,
+				Location: uint32(short.FirstClusterLO),
+				Size:     short.FileSize,
+			}
+
+		default: // short filename
+			var short DirEntry
+			if err = binary.Read(file, binary.LittleEndian, &short); err != nil {
+				return
+			}
+
+			var name []byte
+			for _, v := range short.Name {
+				name = append(name, v)
+			}
+
+			entryInfo = EntryInfo{
+				Name:     string(name),
+				Attr:     short.Attr,
+				Location: uint32(short.FirstClusterLO),
+				Size:     short.FileSize,
+			}
+		}
+
+		root = append(root, entryInfo)
 	}
 
 	return
