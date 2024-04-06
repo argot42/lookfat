@@ -6,20 +6,82 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"reflect"
-	//"time"
 )
 
+const HexFMT = "0x%x"
+
+type HexByte uint8
+
+func (b HexByte) String() string {
+	return fmt.Sprintf(HexFMT, uint8(b))
+}
+
+type Hex2Byte [2]uint8
+
+func (b Hex2Byte) String() string {
+	var str string
+	for i, s := range b {
+		if i != 0 {
+			str += " "
+		}
+		str += fmt.Sprint(HexByte(s))
+	}
+	return fmt.Sprintf("|%s|", str)
+}
+
+type Hex3Byte [3]uint8
+
+func (b Hex3Byte) String() string {
+	var str string
+	for i, s := range b {
+		if i != 0 {
+			str += " "
+		}
+		str += fmt.Sprint(HexByte(s))
+	}
+	return fmt.Sprintf("|%s|", str)
+}
+
+type Str8Byte [8]uint8
+
+func (b Str8Byte) String() string {
+	var buf []byte
+	for _, s := range b {
+		buf = append(buf, byte(s))
+	}
+	return fmt.Sprintf("\"%s\"", string(buf))
+}
+
+type Str10Byte [10]uint8
+
+func (b Str10Byte) String() string {
+	var buf []byte
+	for _, s := range b {
+		buf = append(buf, byte(s))
+	}
+	return fmt.Sprintf("\"%s\"", string(buf))
+}
+
+type Str11Byte [11]uint8
+
+func (b Str11Byte) String() string {
+	var buf []byte
+	for _, s := range b {
+		buf = append(buf, byte(s))
+	}
+	return fmt.Sprintf("\"%s\"", string(buf))
+}
+
 type BPB struct {
-	JumpBoot            [3]uint8 `print:"hex"`
-	OEMName             [8]uint8 `print:"str"`
+	JumpBoot            Hex3Byte
+	OEMName             Str8Byte
 	BytesPerSector      uint16
 	SectorPerCluster    uint8
 	ReservedSectorCount uint16
 	NFATs               uint8
 	RootEntryCount      uint16
 	TotalSectors16      uint16
-	Media               uint8  `print:"hex"`
+	Media               HexByte
 	FATsz16             uint16 // number of sectors per FAT
 	SectorPerTrack      uint16
 	NumberHeads         uint16
@@ -32,10 +94,10 @@ type BPBExt16 struct {
 	Reserved      uint8
 	BootSignature uint8
 	VolumenID     uint32
-	VolumenLabel  [11]uint8 `print:"str"`
-	FSType        [8]uint8  `print:"str"`
+	VolumenLabel  Str11Byte
+	FSType        Str8Byte
 	Empty         [448]uint8
-	SignatureWord [2]uint8 `print:"hex"`
+	SignatureWord Hex2Byte
 }
 
 type BPBExt32 struct {
@@ -50,10 +112,10 @@ type BPBExt32 struct {
 	Reserved1     uint8
 	BootSignature uint8
 	VolumenID     uint32
-	VolumenLabel  [11]uint8 `print:"str"`
-	FSType        [8]uint8  `print:"str"`
+	VolumenLabel  Str11Byte
+	FSType        Str8Byte
 	Empty         [420]uint8
-	SignatureWord [2]uint8 `print:"hex"`
+	SignatureWord Hex2Byte
 }
 
 type FATInfo struct {
@@ -71,12 +133,12 @@ type FATInfo struct {
 }
 
 type DirEntry struct {
-	Name    [11]uint8 `print:"str"`
-	Attr    uint8     `print:"hex"`
-	NTRes   uint8     // reserved must be 0?
-	CTTenth uint8     // creation time. count tenths of a second 0 <= CCTenth <= 199
-	CTime   uint16    // creation time. granularity is 2s
-	CDate   uint16    // creation date
+	Name    Str11Byte
+	Attr    HexByte
+	NTRes   uint8  // reserved must be 0?
+	CTTenth uint8  // creation time. count tenths of a second 0 <= CCTenth <= 199
+	CTime   uint16 // creation time. granularity is 2s
+	CDate   uint16 // creation date
 	// last accessed date.
 	//This field must be updated on file modification (write operation) and the date value must be equal to WDate.
 	LDate uint16
@@ -90,9 +152,9 @@ type DirEntry struct {
 }
 
 type DirEntryLong struct {
-	Ordinal uint8 `print:"hex"` // order of the long name entry. the contents of the fields must be masked with 0x40
+	Ordinal HexByte // order of the long name entry. the contents of the fields must be masked with 0x40
 	// for the last long directory name in the set
-	Name1          [10]uint8 `print:"str"` // first 5 chars in name
+	Name1          Str10Byte // first 5 chars in name
 	Attr           uint8     `print:"hex"`
 	Type           uint8     // Reserved (set to 0)
 	Checksum       uint8
@@ -103,7 +165,7 @@ type DirEntryLong struct {
 
 type EntryInfo struct {
 	Name string
-	Attr uint8
+	Attr HexByte
 	//Crt      time.Time
 	//Mod      time.Time
 	Location uint32
@@ -162,18 +224,18 @@ func main() {
 }
 
 func pReserved(bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo) {
-	superprint(bpb)
+	fmt.Printf("reserved: %+v\n", bpb)
 
 	switch info.Type {
 	case FAT12, FAT16:
-		superprint(ext16)
+		fmt.Printf("ext12/16: %+v\n", ext16)
 	case FAT32:
-		superprint(ext32)
+		fmt.Printf("ext32: %+v\n", ext32)
 	}
 }
 
 func pRoot(info FATInfo, root []EntryInfo) {
-	fmt.Println(root)
+	fmt.Println("root directory: %+v\n", root)
 }
 
 func pType(info FATInfo) {
@@ -390,8 +452,6 @@ OUT:
 				return
 			}
 
-			superprint(short)
-
 			entryInfo = EntryInfo{
 				Name:     string(name),
 				Attr:     short.Attr,
@@ -446,48 +506,4 @@ func checkerr(msg string, err error) {
 
 		os.Exit(-1)
 	}
-}
-
-func superprint(v interface{}) {
-	t := reflect.TypeOf(v)
-	val := reflect.ValueOf(v)
-
-	fmt.Println(t.Name() + "{")
-
-	for i, field := range reflect.VisibleFields(t) {
-		fmt.Printf("\t%s:", field.Name)
-
-		current := val.Field(i)
-
-		switch field.Tag.Get("print") {
-		case "hex":
-			switch field.Type.Kind() {
-			case reflect.Slice, reflect.Array:
-				fmt.Print("[")
-				for j := 0; j < current.Len(); j++ {
-					if j == 0 {
-						fmt.Printf("0x%x", current.Index(j).Interface())
-					} else {
-						fmt.Printf(" 0x%x", current.Index(j).Interface())
-					}
-				}
-				fmt.Println("]")
-			default:
-				fmt.Printf("0x%x\n", current)
-			}
-		case "str":
-			switch field.Type.Kind() {
-			case reflect.Slice, reflect.Array:
-				var buf []byte
-				for j := 0; j < current.Len(); j++ {
-					buf = append(buf, current.Index(j).Interface().(byte))
-				}
-				fmt.Printf("\"%s\"\n", string(buf))
-			}
-		default:
-			fmt.Println(current)
-		}
-	}
-
-	fmt.Println("}")
 }
