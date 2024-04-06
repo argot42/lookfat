@@ -235,7 +235,7 @@ func pReserved(bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo) {
 }
 
 func pRoot(info FATInfo, root []EntryInfo) {
-	fmt.Println("root directory: %+v\n", root)
+	fmt.Printf("root directory: %+v\n", root)
 }
 
 func pType(info FATInfo) {
@@ -258,8 +258,6 @@ Data Region Sectors: %d
 Data Region offset: %d
 Total Sectors: %d
 Cluster Count: %d
------------------------------------
-Warn: %s
 `,
 		info.FATSectors,
 		info.FATOffset,
@@ -269,8 +267,11 @@ Warn: %s
 		info.DataOffset,
 		info.TotalSectors,
 		info.ClusterCount,
-		info.Warning,
 	)
+
+	if info.Warning != "" {
+		fmt.Printf("-----------------------------------\nWarn: %s\n", info.Warning)
+	}
 }
 
 func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo, err error) {
