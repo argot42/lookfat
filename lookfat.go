@@ -42,6 +42,16 @@ func (b Hex3Byte) String() string {
 	return fmt.Sprintf("|%s|", str)
 }
 
+type Str4Byte [4]uint8
+
+func (b Str4Byte) String() string {
+	var buf []byte
+	for _, s := range b {
+		buf = append(buf, byte(s))
+	}
+	return fmt.Sprintf("\"%s\"", string(buf))
+}
+
 type Str8Byte [8]uint8
 
 func (b Str8Byte) String() string {
@@ -65,6 +75,16 @@ func (b Str10Byte) String() string {
 type Str11Byte [11]uint8
 
 func (b Str11Byte) String() string {
+	var buf []byte
+	for _, s := range b {
+		buf = append(buf, byte(s))
+	}
+	return fmt.Sprintf("\"%s\"", string(buf))
+}
+
+type Str12Byte [12]uint8
+
+func (b Str12Byte) String() string {
 	var buf []byte
 	for _, s := range b {
 		buf = append(buf, byte(s))
@@ -155,17 +175,18 @@ type DirEntryLong struct {
 	Ordinal HexByte // order of the long name entry. the contents of the fields must be masked with 0x40
 	// for the last long directory name in the set
 	Name1          Str10Byte // first 5 chars in name
-	Attr           uint8     `print:"hex"`
-	Type           uint8     // Reserved (set to 0)
+	Attr           HexByte
+	Type           uint8 // Reserved (set to 0)
 	Checksum       uint8
-	Name2          [12]uint8 `print:"str"` // 6 more chars in name
+	Name2          Str12Byte // 6 more chars in name
 	FirstClusterLO uint16    // must be set to 0
-	Name3          [4]uint8  `print:"str"` // last 2 chars in name
+	Name3          Str4Byte  // last 2 chars in name
 }
 
 type EntryInfo struct {
-	Name string
-	Attr HexByte
+	ShortName string
+	LongName  string
+	Attr      HexByte
 	//Crt      time.Time
 	//Mod      time.Time
 	Location uint32
@@ -181,14 +202,16 @@ const (
 const RootEntrySize = 32
 
 func main() {
+	printHelp := flag.Bool("h", false, "print usage")
 	printReserved := flag.Bool("r", false, "print reserved region")
 	printRoot := flag.Bool("d", false, "print root directory region")
 	printType := flag.Bool("t", false, "detect FAT size")
 	printInfo := flag.Bool("i", false, "print fs info")
+	filename := flag.String("f", "", "get content from file")
 
 	flag.Parse()
 
-	if !*printReserved && !*printType && !*printInfo && !*printRoot {
+	if !*printReserved && !*printType && !*printInfo && !*printRoot && *filename == "" {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -196,6 +219,11 @@ func main() {
 	if flag.NArg() == 0 {
 		flag.Usage()
 		os.Exit(-1)
+	}
+
+	if *printHelp {
+		flag.Usage()
+		os.Exit(1)
 	}
 
 	filepath := flag.Arg(0)
@@ -221,6 +249,31 @@ func main() {
 	if *printInfo {
 		pInfo(info)
 	}
+	if *filename != "" {
+		pFile(file, *filename, bpb, info, root)
+	}
+}
+
+func pFile(file *os.File, filename string, bpb BPB, info FATInfo, root []EntryInfo) {
+	var fileInfo EntryInfo
+
+	for _, v := range root {
+		if filename == v.ShortName || filename == v.LongName {
+			fileInfo = v
+			break
+		}
+	}
+
+	if fileInfo == (EntryInfo{}) {
+		fmt.Fprintln(os.Stderr, "file not found")
+		return
+	}
+
+	// here we calculate the file offset inside the file region
+	// the first two clusters numbers are reserved so we substract them from the `Location` number
+	fileOffset := info.DataOffset + (fileInfo.Location-2)*uint32(bpb.SectorPerCluster)*uint32(bpb.BytesPerSector)
+
+	fmt.Printf("0x%x\n", fileOffset)
 }
 
 func pReserved(bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo) {
@@ -357,6 +410,8 @@ func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32,
 	}
 
 	info.FATOffset = uint32(bpb.ReservedSectorCount) * uint32(bpb.BytesPerSector)
+	info.DataOffset = (uint32(bpb.ReservedSectorCount) + info.FATNumber*info.FATSectors + info.RootDirSectors) *
+		uint32(bpb.BytesPerSector)
 
 	return
 }
@@ -365,6 +420,10 @@ func readRootDirSector(file *os.File, info FATInfo) (root []EntryInfo, err error
 	if _, err = file.Seek(int64(info.RootDirOffset), 0); err != nil {
 		return
 	}
+
+	var lastLongFilename uint8
+
+	longFilenames := make(map[uint8][][]byte)
 
 OUT:
 	for {
@@ -398,67 +457,54 @@ OUT:
 			}
 
 			entryInfo = EntryInfo{
-				Name: string(name),
-				Attr: entry.Attr,
+				ShortName: string(name),
+				Attr:      entry.Attr,
 			}
 
 		case 0xf: // long filename
 			var entry DirEntryLong
-			var parts [][]byte
 
-			for {
-				if err = binary.Read(file, binary.LittleEndian, &entry); err != nil {
-					return
-				}
-
-				var p []byte
-
-				for _, v := range entry.Name1 {
-					if v == 0xff {
-						break
-					}
-					p = append(p, v)
-				}
-
-				for _, v := range entry.Name2 {
-					if v == 0xff {
-						break
-					}
-					p = append(p, v)
-				}
-
-				for _, v := range entry.Name3 {
-					if v == 0xff {
-						break
-					}
-					p = append(p, v)
-				}
-
-				parts = append(parts, p)
-
-				if entry.Ordinal&0x3f == 1 {
-					break
-				}
-			}
-
-			var name []byte
-			for i := len(parts) - 1; i >= 0; i-- {
-				for _, p := range parts[i] {
-					name = append(name, p)
-				}
-			}
-
-			var short DirEntry
-			if err = binary.Read(file, binary.LittleEndian, &short); err != nil {
+			if err = binary.Read(file, binary.LittleEndian, &entry); err != nil {
 				return
 			}
 
-			entryInfo = EntryInfo{
-				Name:     string(name),
-				Attr:     short.Attr,
-				Location: uint32(short.FirstClusterLO),
-				Size:     short.FileSize,
+			lf, ok := longFilenames[entry.Checksum]
+
+			var part []byte
+
+			for _, v := range entry.Name1 {
+				if v == 0xff {
+					break
+				}
+				part = append(part, v)
 			}
+
+			for _, v := range entry.Name2 {
+				if v == 0xff {
+					break
+				}
+				part = append(part, v)
+			}
+
+			for _, v := range entry.Name3 {
+				if v == 0xff {
+					break
+				}
+				part = append(part, v)
+			}
+
+			if !ok {
+				longFilenames[entry.Checksum] = [][]byte{part}
+			} else {
+				lf = append(lf, part)
+				longFilenames[entry.Checksum] = lf
+			}
+
+			if entry.Ordinal&0x3f == 1 {
+				lastLongFilename = entry.Checksum
+			}
+
+			continue
 
 		default: // short filename
 			var short DirEntry
@@ -466,17 +512,35 @@ OUT:
 				return
 			}
 
-			var name []byte
+			var shortName []byte
 			for _, v := range short.Name {
-				name = append(name, v)
+				shortName = append(shortName, v)
 			}
 
-			entryInfo = EntryInfo{
-				Name:     string(name),
-				Attr:     short.Attr,
-				Location: uint32(short.FirstClusterLO),
-				Size:     short.FileSize,
+			// if there's no filename checksum saved then save the file entry
+			// with only a short filename and continue with the next entry
+			if lastLongFilename == 0 {
+				entryInfo = EntryInfo{
+					ShortName: string(shortName),
+					Attr:      short.Attr,
+					Location:  uint32(short.FirstClusterLO),
+					Size:      short.FileSize,
+				}
+				break
 			}
+
+			// if there's a checksum saved save both filenames to the entry
+			longName := buildLongFilename(longFilenames[lastLongFilename])
+
+			entryInfo = EntryInfo{
+				ShortName: string(shortName),
+				LongName:  string(longName),
+				Attr:      short.Attr,
+				Location:  uint32(short.FirstClusterLO),
+				Size:      short.FileSize,
+			}
+
+			lastLongFilename = 0
 		}
 
 		root = append(root, entryInfo)
@@ -485,12 +549,28 @@ OUT:
 	return
 }
 
+// buildLongFilename process parts of a long filename and converts it into a byte slice
+func buildLongFilename(src [][]byte) (lf []byte) {
+	for i := len(src) - 1; i >= 0; i-- {
+		part := src[i]
+		limit := len(part)
+
+		if i == 0 {
+			limit -= 2
+		}
+
+		for j := 0; j < limit; j += 2 {
+			lf = append(lf, part[j])
+		}
+	}
+
+	return
+}
+
+// doILookFAT checks if it's an actual FAT filesystem
 func doILookFAT(bpb BPB) bool {
-	// checks if it's an actual FAT filesystem
 	switch bpb.JumpBoot[0] {
-	case 0xEB:
-		fallthrough
-	case 0xE9:
+	case 0xEB, 0xE9:
 		return true
 	}
 
