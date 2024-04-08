@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -150,6 +151,7 @@ type FATInfo struct {
 	DataOffset     uint32
 	TotalSectors   uint32
 	ClusterCount   uint32
+	ClusterSize    uint32
 }
 
 type DirEntry struct {
@@ -250,11 +252,14 @@ func main() {
 		pInfo(info)
 	}
 	if *filename != "" {
-		pFile(file, *filename, bpb, info, root)
+		if err = pFile(file, *filename, bpb, info, root); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(-1)
+		}
 	}
 }
 
-func pFile(file *os.File, filename string, bpb BPB, info FATInfo, root []EntryInfo) {
+func pFile(file *os.File, filename string, bpb BPB, info FATInfo, root []EntryInfo) (err error) {
 	var fileInfo EntryInfo
 
 	for _, v := range root {
@@ -265,15 +270,78 @@ func pFile(file *os.File, filename string, bpb BPB, info FATInfo, root []EntryIn
 	}
 
 	if fileInfo == (EntryInfo{}) {
-		fmt.Fprintln(os.Stderr, "file not found")
-		return
+		return errors.New("file not found")
 	}
 
-	// here we calculate the file offset inside the file region
-	// the first two clusters numbers are reserved so we substract them from the `Location` number
-	fileOffset := info.DataOffset + (fileInfo.Location-2)*uint32(bpb.SectorPerCluster)*uint32(bpb.BytesPerSector)
+	var fatEntry []byte
+	var eof, location, entrySize uint32
 
-	fmt.Printf("0x%x\n", fileOffset)
+	switch info.Type {
+	case FAT12:
+		fatEntry = make([]byte, 2)
+		eof = 0xfff
+	case FAT16:
+		fatEntry = make([]byte, 2)
+		eof = 0xffff
+	case FAT32:
+		fatEntry = make([]byte, 4)
+		eof = 0xffffffff
+	}
+
+	location = fileInfo.Location
+	entrySize = uint32(len(fatEntry))
+
+	var b []byte
+
+	for {
+		// here we calculate the file offset inside the file region
+		// the first two clusters numbers are reserved so we substract them from the `Location` number
+		fileOffset := info.DataOffset + (location-2)*uint32(bpb.SectorPerCluster)*uint32(bpb.BytesPerSector)
+
+		clusterBuf := make([]byte, info.ClusterSize)
+
+		if _, err = file.Seek(int64(fileOffset), io.SeekStart); err != nil {
+			return
+		}
+		if err = binary.Read(file, binary.LittleEndian, clusterBuf); err != nil {
+			return
+		}
+
+		b = append(b, clusterBuf...)
+
+		fatEntryOffset := info.FATOffset + location*entrySize
+
+		if _, err = file.Seek(int64(fatEntryOffset), io.SeekStart); err != nil {
+			return
+		}
+		if err = binary.Read(file, binary.LittleEndian, fatEntry); err != nil {
+			return
+		}
+
+		switch info.Type {
+		case FAT12, FAT16:
+			location = uint32(binary.LittleEndian.Uint16(fatEntry))
+		case FAT32:
+			location = binary.LittleEndian.Uint32(fatEntry)
+		}
+
+		if location == eof {
+			break
+		}
+	}
+
+	/*for _, v := range b {
+		if v == 10 {
+			break
+		}
+		if err = binary.Write(os.Stdout, binary.LittleEndian, v); err != nil {
+			return
+		}
+	}*/
+
+	err = binary.Write(os.Stdout, binary.LittleEndian, b[:fileInfo.Size])
+
+	return
 }
 
 func pReserved(bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo) {
@@ -311,6 +379,7 @@ Data Region Sectors: %d
 Data Region offset: %d
 Total Sectors: %d
 Cluster Count: %d
+Cluster Size: %d
 `,
 		info.FATSectors,
 		info.FATOffset,
@@ -320,6 +389,7 @@ Cluster Count: %d
 		info.DataOffset,
 		info.TotalSectors,
 		info.ClusterCount,
+		info.ClusterSize,
 	)
 
 	if info.Warning != "" {
@@ -381,6 +451,9 @@ func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32,
 
 	info.ClusterCount = info.DataSectors / uint32(bpb.SectorPerCluster)
 
+	// calculate cluster size in bytes
+	info.ClusterSize = uint32(bpb.SectorPerCluster) * uint32(bpb.BytesPerSector)
+
 	// set FAT type by cluster count or set a warning if the type mismatch
 	switch ccnt := info.ClusterCount; {
 	case ccnt < 4085:
@@ -417,7 +490,7 @@ func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32,
 }
 
 func readRootDirSector(file *os.File, info FATInfo) (root []EntryInfo, err error) {
-	if _, err = file.Seek(int64(info.RootDirOffset), 0); err != nil {
+	if _, err = file.Seek(int64(info.RootDirOffset), io.SeekStart); err != nil {
 		return
 	}
 
@@ -427,7 +500,7 @@ func readRootDirSector(file *os.File, info FATInfo) (root []EntryInfo, err error
 
 OUT:
 	for {
-		if _, err = file.Seek(11, 1); err != nil {
+		if _, err = file.Seek(11, io.SeekCurrent); err != nil {
 			return
 		}
 
@@ -436,7 +509,7 @@ OUT:
 			return
 		}
 
-		if _, err = file.Seek(-12, 1); err != nil {
+		if _, err = file.Seek(-12, io.SeekCurrent); err != nil {
 			return
 		}
 
