@@ -298,8 +298,10 @@ func pFile(file *os.File, filename string, bpb BPB, info FATInfo, root []EntryIn
 		// the first two clusters numbers are reserved so we substract them from the `Location` number
 		fileOffset := info.DataOffset + (location-2)*uint32(bpb.SectorPerCluster)*uint32(bpb.BytesPerSector)
 
+		// buffer to store parts of the file stored inside the fs cluster
 		clusterBuf := make([]byte, info.ClusterSize)
 
+		// read the cluster chunk
 		if _, err = file.Seek(int64(fileOffset), io.SeekStart); err != nil {
 			return
 		}
@@ -309,8 +311,10 @@ func pFile(file *os.File, filename string, bpb BPB, info FATInfo, root []EntryIn
 
 		b = append(b, clusterBuf...)
 
+		// calculate fat entry offset (to look for next file part)
 		fatEntryOffset := info.FATOffset + location*entrySize
 
+		// read fat entry
 		if _, err = file.Seek(int64(fatEntryOffset), io.SeekStart); err != nil {
 			return
 		}
@@ -325,19 +329,11 @@ func pFile(file *os.File, filename string, bpb BPB, info FATInfo, root []EntryIn
 			location = binary.LittleEndian.Uint32(fatEntry)
 		}
 
+		// if the new location is EOF stop reading
 		if location == eof {
 			break
 		}
 	}
-
-	/*for _, v := range b {
-		if v == 10 {
-			break
-		}
-		if err = binary.Write(os.Stdout, binary.LittleEndian, v); err != nil {
-			return
-		}
-	}*/
 
 	err = binary.Write(os.Stdout, binary.LittleEndian, b[:fileInfo.Size])
 
