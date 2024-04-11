@@ -285,7 +285,7 @@ func pFile(file *os.File, filename string, bpb BPB, info FATInfo, root []EntryIn
 		eof = 0xffff
 	case FAT32:
 		fatEntry = make([]byte, 4)
-		eof = 0xffffffff
+		eof = 0xfffffff
 	}
 
 	location = fileInfo.Location
@@ -368,11 +368,11 @@ func pType(info FATInfo) {
 
 func pInfo(info FATInfo) {
 	fmt.Printf(`FAT Region Sectors: %d
-FAT Region offset: %d
+FAT Region offset: 0x%x
 Root Region Sectors: %d
-Root Region offset: %d
+Root Region offset: 0x%x
 Data Region Sectors: %d
-Data Region offset: %d
+Data Region offset: 0x%x
 Total Sectors: %d
 Cluster Count: %d
 Cluster Size: %d
@@ -403,6 +403,8 @@ func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32,
 		return
 	}
 
+	// TODO: check this calculation RootEntrySize is set to 32 bytes but that would be only in FAT32
+	// also RootEntryCount is zero in FAT32 DOUBLE CHECK!
 	info.RootDirSectors = (uint32(bpb.RootEntryCount)*RootEntrySize + uint32(bpb.BytesPerSector) - 1) / uint32(bpb.BytesPerSector)
 
 	// root entry count greater than 0 usually means FAT12/16
@@ -465,7 +467,7 @@ func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32,
 			info.Warning = fmt.Sprintf("according to my calculations FAT type is %d but the cluster count point to FAT16", info.Type)
 		}
 	default:
-		if info.Type == 0 {
+		if info.Type == 0 || info.Type == FAT32 {
 			info.Type = FAT32
 		} else {
 			info.Warning = fmt.Sprintf("according to my calculations FAT type is %d but the cluster count point to FAT32", info.Type)
@@ -476,6 +478,10 @@ func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32,
 	switch info.Type {
 	case FAT12, FAT16:
 		info.RootDirOffset = (uint32(bpb.ReservedSectorCount) + info.FATNumber*info.FATSectors) * uint32(bpb.BytesPerSector)
+	case FAT32:
+		info.RootDirOffset = (uint32(bpb.ReservedSectorCount) +
+			info.FATNumber*info.FATSectors +
+			(ext32.RootCluster-2)*uint32(bpb.SectorPerCluster)) * uint32(bpb.BytesPerSector)
 	}
 
 	info.FATOffset = uint32(bpb.ReservedSectorCount) * uint32(bpb.BytesPerSector)
@@ -586,30 +592,19 @@ OUT:
 				shortName = append(shortName, v)
 			}
 
-			// if there's no filename checksum saved then save the file entry
-			// with only a short filename and continue with the next entry
-			if lastLongFilename == 0 {
-				entryInfo = EntryInfo{
-					ShortName: string(shortName),
-					Attr:      short.Attr,
-					Location:  uint32(short.FirstClusterLO),
-					Size:      short.FileSize,
-				}
-				break
-			}
-
-			// if there's a checksum saved save both filenames to the entry
-			longName := buildLongFilename(longFilenames[lastLongFilename])
-
 			entryInfo = EntryInfo{
 				ShortName: string(shortName),
-				LongName:  string(longName),
 				Attr:      short.Attr,
-				Location:  uint32(short.FirstClusterLO),
+				Location:  uint32(short.FirstClusterHI)<<16 + uint32(short.FirstClusterLO),
 				Size:      short.FileSize,
 			}
 
-			lastLongFilename = 0
+			// if there's a checksum saved add long filename to the entry
+			if lastLongFilename != 0 {
+				longName := buildLongFilename(longFilenames[lastLongFilename])
+				entryInfo.LongName = string(longName)
+				lastLongFilename = 0
+			}
 		}
 
 		root = append(root, entryInfo)

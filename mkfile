@@ -9,3 +9,6 @@ mountbsd:V:
 
 mount32:V:
     doas mount -o loop -t vfat fat32.dat -o 'uid=1000,gid=1000' mnt
+
+drive:V:
+    doas mount -o loop -t vfat pendrive32.dat -o 'uid=1000,gid=1000' mnt
