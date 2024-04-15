@@ -9,6 +9,7 @@ import (
 	"os"
 )
 
+// printables
 const HexFMT = "0x%x"
 
 type HexByte uint8
@@ -93,6 +94,7 @@ func (b Str12Byte) String() string {
 	return fmt.Sprintf("\"%s\"", string(buf))
 }
 
+// FAT header
 type BPB struct {
 	JumpBoot            Hex3Byte
 	OEMName             Str8Byte
@@ -122,9 +124,10 @@ type BPBExt16 struct {
 }
 
 type BPBExt32 struct {
-	FATsz32       uint32 // number of sectors per FAT (FAT32 only)
-	ExtFlags      [2]uint8
-	FSVer         [2]uint8
+	FATsz32  uint32 // number of sectors per FAT (FAT32 only)
+	ExtFlags [2]uint8
+	FSVer    [2]uint8
+	// RootCluster is the cluster number where the root directory begins inside the data region
 	RootCluster   uint32
 	FSInfo        uint16
 	BkBootSec     uint16
@@ -139,6 +142,7 @@ type BPBExt32 struct {
 	SignatureWord Hex2Byte
 }
 
+// FATInfo is a helper struct that saves useful information calculated with headers' info
 type FATInfo struct {
 	Type           uint8
 	Warning        string
@@ -154,6 +158,7 @@ type FATInfo struct {
 	ClusterSize    uint32
 }
 
+// dir/file entries
 type DirEntry struct {
 	Name    Str11Byte
 	Attr    HexByte
@@ -162,19 +167,22 @@ type DirEntry struct {
 	CTime   uint16 // creation time. granularity is 2s
 	CDate   uint16 // creation date
 	// last accessed date.
-	//This field must be updated on file modification (write operation) and the date value must be equal to WDate.
+	// This field must be updated on file modification (write operation)
+	// and the date value must be equal to WDate.
 	LDate uint16
 	// High word of first data cluster number for file/directory described by this entry.
 	// Only valid for volumes formatted FAT32. Must be set to 0 on volumes formatted FAT12/FAT16.
 	FirstClusterHI uint16
 	WTime          uint16 // write time (must be equal to CTime at creation)
 	WDate          uint16 // write date (must be equal to CDate at creation)
-	FirstClusterLO uint16 // Low word of first data cluster number for file/dir described by this entry
+	// Low word of first data cluster number for file/dir described by this entry
+	FirstClusterLO uint16
 	FileSize       uint32
 }
 
 type DirEntryLong struct {
-	Ordinal HexByte // order of the long name entry. the contents of the fields must be masked with 0x40
+	// order of the long name entry. the contents of the fields must be masked with 0x40
+	Ordinal HexByte
 	// for the last long directory name in the set
 	Name1          Str10Byte // first 5 chars in name
 	Attr           HexByte
@@ -295,8 +303,10 @@ func pFile(file *os.File, filename string, bpb BPB, info FATInfo, root []EntryIn
 
 	for {
 		// here we calculate the file offset inside the file region
-		// the first two clusters numbers are reserved so we substract them from the `Location` number
-		fileOffset := info.DataOffset + (location-2)*uint32(bpb.SectorPerCluster)*uint32(bpb.BytesPerSector)
+		// the first two clusters numbers are reserved
+		// so we substract them from the `Location` number
+		fileOffset := info.DataOffset +
+			(location-2)*uint32(bpb.SectorPerCluster)*uint32(bpb.BytesPerSector)
 
 		// buffer to store parts of the file stored inside the fs cluster
 		chunk := make([]byte, info.ClusterSize)
@@ -393,7 +403,13 @@ Cluster Size: %d
 	}
 }
 
-func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo, err error) {
+func readReservedSector(file *os.File) (
+	bpb BPB,
+	ext16 BPBExt16,
+	ext32 BPBExt32,
+	info FATInfo,
+	err error,
+) {
 	if err = binary.Read(file, binary.LittleEndian, &bpb); err != nil {
 		return
 	}
@@ -405,7 +421,8 @@ func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32,
 
 	// TODO: check this calculation RootEntrySize is set to 32 bytes but that would be only in FAT32
 	// also RootEntryCount is zero in FAT32 DOUBLE CHECK!
-	info.RootDirSectors = (uint32(bpb.RootEntryCount)*RootEntrySize + uint32(bpb.BytesPerSector) - 1) / uint32(bpb.BytesPerSector)
+	info.RootDirSectors = (uint32(bpb.RootEntryCount)*RootEntrySize +
+		uint32(bpb.BytesPerSector) - 1) / uint32(bpb.BytesPerSector)
 
 	// root entry count greater than 0 usually means FAT12/16
 	if bpb.RootEntryCount != 0 {
@@ -442,10 +459,13 @@ func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32,
 	// if clusterCount < 4085       = FAT12
 	// else if clusterCount < 65525 = FAT16
 	// else                         = FAT32
-	// for some reason you can create different FAT types disregarding cluster count when using mkfs.fat on linux
+	// for some reason you can create different FAT types disregarding
+	// cluster count when using mkfs.fat on linux
 	// that's why I tried another method to figure out FAT type checking root dir sector count
 	// I'm not sure if it is correct
-	info.DataSectors = info.TotalSectors - (uint32(bpb.ReservedSectorCount) + uint32(bpb.NFATs)*info.FATSectors + uint32(info.RootDirSectors))
+	info.DataSectors = info.TotalSectors - (uint32(bpb.ReservedSectorCount) +
+		uint32(bpb.NFATs)*info.FATSectors +
+		uint32(info.RootDirSectors))
 
 	info.ClusterCount = info.DataSectors / uint32(bpb.SectorPerCluster)
 
@@ -458,26 +478,36 @@ func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32,
 		if info.Type == 0 {
 			info.Type = FAT12
 		} else {
-			info.Warning = fmt.Sprintf("according to my calculations FAT type is %d but the cluster count point to FAT12", info.Type)
+			info.Warning = fmt.Sprintf(
+				"according to my calculations FAT type is %d but the cluster count point to FAT12",
+				info.Type,
+			)
 		}
 	case ccnt < 65525:
 		if info.Type == 0 {
 			info.Type = FAT16
 		} else {
-			info.Warning = fmt.Sprintf("according to my calculations FAT type is %d but the cluster count point to FAT16", info.Type)
+			info.Warning = fmt.Sprintf(
+				"according to my calculations FAT type is %d but the cluster count point to FAT16",
+				info.Type,
+			)
 		}
 	default:
 		if info.Type == 0 || info.Type == FAT32 {
 			info.Type = FAT32
 		} else {
-			info.Warning = fmt.Sprintf("according to my calculations FAT type is %d but the cluster count point to FAT32", info.Type)
+			info.Warning = fmt.Sprintf(
+				"according to my calculations FAT type is %d but the cluster count point to FAT32",
+				info.Type,
+			)
 		}
 	}
 
 	// calculate offsets
 	switch info.Type {
 	case FAT12, FAT16:
-		info.RootDirOffset = (uint32(bpb.ReservedSectorCount) + info.FATNumber*info.FATSectors) * uint32(bpb.BytesPerSector)
+		info.RootDirOffset = (uint32(bpb.ReservedSectorCount) + info.FATNumber*info.FATSectors) *
+			uint32(bpb.BytesPerSector)
 	case FAT32:
 		info.RootDirOffset = (uint32(bpb.ReservedSectorCount) +
 			info.FATNumber*info.FATSectors +
@@ -485,7 +515,8 @@ func readReservedSector(file *os.File) (bpb BPB, ext16 BPBExt16, ext32 BPBExt32,
 	}
 
 	info.FATOffset = uint32(bpb.ReservedSectorCount) * uint32(bpb.BytesPerSector)
-	info.DataOffset = (uint32(bpb.ReservedSectorCount) + info.FATNumber*info.FATSectors + info.RootDirSectors) *
+	info.DataOffset = (uint32(bpb.ReservedSectorCount) +
+		info.FATNumber*info.FATSectors + info.RootDirSectors) *
 		uint32(bpb.BytesPerSector)
 
 	return
