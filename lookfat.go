@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
 )
 
 // printables
@@ -245,7 +247,8 @@ func main() {
 	bpb, ext16, ext32, info, err := readReservedSector(file)
 	checkerr("", err)
 
-	root, err := readRootDirSector(file, info)
+	root, err := readDir(file, int64(info.RootDirOffset))
+	checkerr("", err)
 
 	if *printReserved {
 		pReserved(bpb, ext16, ext32, info)
@@ -260,17 +263,25 @@ func main() {
 		pInfo(info)
 	}
 	if *filename != "" {
-		if err = pFile(file, *filename, bpb, info, root); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(-1)
-		}
+		err = pFile(file, *filename, bpb, info, root)
+		checkerr("", err)
 	}
 }
 
-func pFile(file *os.File, filename string, bpb BPB, info FATInfo, root []EntryInfo) (err error) {
+func pFile(file *os.File, path string, bpb BPB, info FATInfo, root []EntryInfo) (err error) {
 	var fileInfo EntryInfo
+	var entries []EntryInfo
 
-	for _, v := range root {
+	splited := splitPath(path)
+	filename := splited[len(splited)-1]
+	for _, p := range splited {
+		entries, err = walk(file, bpb, info, root, p)
+		if err != nil {
+			return
+		}
+	}
+
+	for _, v := range entries {
 		if filename == v.ShortName || filename == v.LongName {
 			fileInfo = v
 			break
@@ -522,8 +533,38 @@ func readReservedSector(file *os.File) (
 	return
 }
 
-func readRootDirSector(file *os.File, info FATInfo) (root []EntryInfo, err error) {
-	if _, err = file.Seek(int64(info.RootDirOffset), io.SeekStart); err != nil {
+func walk(
+	file *os.File,
+	bpb BPB,
+	info FATInfo,
+	src []EntryInfo,
+	dst string,
+) (content []EntryInfo, err error) {
+	var entry EntryInfo
+
+	for _, v := range src {
+		if v.LongName == dst || v.ShortName == dst {
+			entry = v
+			break
+		}
+	}
+
+	if entry == (EntryInfo{}) {
+		return nil, errors.New("walk: entry not found")
+	}
+
+	if entry.Attr&0x10 == 0 {
+		return []EntryInfo{entry}, nil
+	}
+
+	offset := info.DataOffset +
+		(entry.Location-2)*uint32(bpb.SectorPerCluster)*uint32(bpb.BytesPerSector)
+
+	return readDir(file, int64(offset))
+}
+
+func readDir(file *os.File, offset int64) (entries []EntryInfo, err error) {
+	if _, err = file.Seek(offset, io.SeekStart); err != nil {
 		return
 	}
 
@@ -638,9 +679,32 @@ OUT:
 			}
 		}
 
-		root = append(root, entryInfo)
+		entries = append(entries, entryInfo)
 	}
 
+	return
+}
+
+// splitPath split the path and returns a slice with all the names
+func splitPath(path string) (elements []string) {
+	var dir, file string
+	dir = path
+
+	for {
+		dir = filepath.Clean(dir)
+		dir, file = filepath.Split(dir)
+
+		if file == "" {
+			break
+		}
+
+		elements = append(elements, file)
+
+		if dir == "" {
+			break
+		}
+	}
+	slices.Reverse(elements)
 	return
 }
 
