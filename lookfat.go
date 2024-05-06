@@ -269,27 +269,19 @@ func main() {
 }
 
 func pFile(file *os.File, path string, bpb BPB, info FATInfo, root []EntryInfo) (err error) {
-	var fileInfo EntryInfo
-	var entries []EntryInfo
-
 	splited := splitPath(path)
 	filename := splited[len(splited)-1]
+
 	for _, p := range splited {
-		entries, err = walk(file, bpb, info, root, p)
+		root, err = walk(file, bpb, info, root, p)
 		if err != nil {
 			return
 		}
 	}
 
-	for _, v := range entries {
-		if filename == v.ShortName || filename == v.LongName {
-			fileInfo = v
-			break
-		}
-	}
-
-	if fileInfo == (EntryInfo{}) {
-		return errors.New("file not found")
+	ok, fileInfo := findFile(filename, root)
+	if !ok {
+		return errors.New("entry not found")
 	}
 
 	var fatEntry []byte
@@ -533,6 +525,16 @@ func readReservedSector(file *os.File) (
 	return
 }
 
+func findFile(name string, entries []EntryInfo) (ok bool, file EntryInfo) {
+	for _, v := range entries {
+		if name == v.LongName || name == v.ShortName {
+			file = v
+			break
+		}
+	}
+	return file != (EntryInfo{}), file
+}
+
 func walk(
 	file *os.File,
 	bpb BPB,
@@ -540,17 +542,9 @@ func walk(
 	src []EntryInfo,
 	dst string,
 ) (content []EntryInfo, err error) {
-	var entry EntryInfo
-
-	for _, v := range src {
-		if v.LongName == dst || v.ShortName == dst {
-			entry = v
-			break
-		}
-	}
-
-	if entry == (EntryInfo{}) {
-		return nil, errors.New("walk: entry not found")
+	ok, entry := findFile(dst, src)
+	if !ok {
+		return nil, errors.New("entry not found")
 	}
 
 	if entry.Attr&0x10 == 0 {
