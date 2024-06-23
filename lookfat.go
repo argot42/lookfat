@@ -213,17 +213,36 @@ const (
 
 const RootEntrySize = 32
 
+type Flags struct {
+	printReserved bool
+	printRoot     bool
+	printType     bool
+	printInfo     bool
+	printFAT      bool
+	filename      string
+}
+
 func main() {
 	printHelp := flag.Bool("h", false, "print usage")
 	printReserved := flag.Bool("r", false, "print reserved region")
 	printRoot := flag.Bool("d", false, "print root directory region")
-	printType := flag.Bool("t", false, "detect FAT size")
+	printType := flag.Bool("t", false, "detect FAT type")
 	printInfo := flag.Bool("i", false, "print fs info")
+	printFAT := flag.Bool("a", false, "print all FAT entries")
 	filename := flag.String("f", "", "get content from file")
 
 	flag.Parse()
 
-	if !*printReserved && !*printType && !*printInfo && !*printRoot && *filename == "" {
+	flags := Flags{
+		printReserved: *printReserved,
+		printRoot:     *printRoot,
+		printType:     *printType,
+		printInfo:     *printInfo,
+		printFAT:      *printFAT,
+		filename:      *filename,
+	}
+
+	if flags == (Flags{}) {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -262,10 +281,46 @@ func main() {
 	if *printInfo {
 		pInfo(info)
 	}
+	if *printFAT {
+		pFAT(file, info)
+	}
 	if *filename != "" {
 		err = pFile(file, *filename, bpb, info, root)
 		checkerr("", err)
 	}
+}
+
+func pFAT(file *os.File, info FATInfo) (err error) {
+	_, entry := mkentry(info.Type)
+
+	if _, err = file.Seek(int64(info.FATOffset), io.SeekStart); err != nil {
+		return
+	}
+
+	var max uint32
+
+	pos := info.FATOffset
+
+	if info.RootDirOffset > info.DataOffset {
+		max = info.DataOffset
+	} else {
+		max = info.RootDirOffset
+	}
+
+	var i int
+	for pos < max {
+		err := binary.Read(file, binary.LittleEndian, entry)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("(%d: 0x%x) %v -> %v\n", i, pos, entry, locFromEntry(info.Type, entry))
+
+		pos += uint32(len(entry))
+		i++
+	}
+
+	return
 }
 
 func pFile(file *os.File, path string, bpb BPB, info FATInfo, root []EntryInfo) (err error) {
@@ -287,17 +342,7 @@ func pFile(file *os.File, path string, bpb BPB, info FATInfo, root []EntryInfo) 
 	var fatEntry []byte
 	var eof, location, entrySize uint32
 
-	switch info.Type {
-	case FAT12:
-		fatEntry = make([]byte, 2)
-		eof = 0xfff
-	case FAT16:
-		fatEntry = make([]byte, 2)
-		eof = 0xffff
-	case FAT32:
-		fatEntry = make([]byte, 4)
-		eof = 0xfffffff
-	}
+	eof, fatEntry = mkentry(info.Type)
 
 	location = fileInfo.Location
 	entrySize = uint32(len(fatEntry))
@@ -335,12 +380,7 @@ func pFile(file *os.File, path string, bpb BPB, info FATInfo, root []EntryInfo) 
 			return
 		}
 
-		switch info.Type {
-		case FAT12, FAT16:
-			location = uint32(binary.LittleEndian.Uint16(fatEntry))
-		case FAT32:
-			location = binary.LittleEndian.Uint32(fatEntry)
-		}
+		location = locFromEntry(info.Type, fatEntry)
 
 		// if the new location is EOF stop reading
 		if location == eof {
@@ -365,7 +405,10 @@ func pReserved(bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo) {
 }
 
 func pRoot(info FATInfo, root []EntryInfo) {
-	fmt.Printf("root directory: %+v\n", root)
+	fmt.Println("files in root dir:")
+	for _, v := range root {
+		fmt.Printf("%+v\n", v)
+	}
 }
 
 func pType(info FATInfo) {
@@ -568,6 +611,8 @@ func readDir(file *os.File, offset int64) (entries []EntryInfo, err error) {
 
 OUT:
 	for {
+		// seek forward to only read attribute
+		// maybe this can be done in a nicer way
 		if _, err = file.Seek(11, io.SeekCurrent); err != nil {
 			return
 		}
@@ -577,6 +622,7 @@ OUT:
 			return
 		}
 
+		// move cursor back and read the whole entry
 		if _, err = file.Seek(-12, io.SeekCurrent); err != nil {
 			return
 		}
@@ -740,4 +786,30 @@ func checkerr(msg string, err error) {
 
 		os.Exit(-1)
 	}
+}
+
+func mkentry(t uint8) (eof uint32, fatEntry []byte) {
+	switch t {
+	case FAT12:
+		fatEntry = make([]byte, 2)
+		eof = 0xfff
+	case FAT16:
+		fatEntry = make([]byte, 2)
+		eof = 0xffff
+	case FAT32:
+		fatEntry = make([]byte, 4)
+		eof = 0xfffffff
+	}
+	return
+}
+
+func locFromEntry(t uint8, fatEntry []byte) uint32 {
+	switch t {
+	case FAT12, FAT16:
+		return uint32(binary.LittleEndian.Uint16(fatEntry))
+	case FAT32:
+		return binary.LittleEndian.Uint32(fatEntry)
+	}
+
+	panic("not a correct fat type")
 }
