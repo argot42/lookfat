@@ -156,6 +156,7 @@ type FATInfo struct {
 	DataSectors    uint32
 	DataOffset     uint32
 	TotalSectors   uint32
+	SectorSize     uint32
 	ClusterCount   uint32
 	ClusterSize    uint32
 }
@@ -297,15 +298,8 @@ func pFAT(file *os.File, info FATInfo) (err error) {
 		return
 	}
 
-	var max uint32
-
 	pos := info.FATOffset
-
-	if info.RootDirOffset > info.DataOffset {
-		max = info.DataOffset
-	} else {
-		max = info.RootDirOffset
-	}
+	max := info.FATOffset + info.FATSectors*info.FATNumber*info.SectorSize
 
 	var i int
 	for pos < max {
@@ -423,7 +417,8 @@ func pType(info FATInfo) {
 }
 
 func pInfo(info FATInfo) {
-	fmt.Printf(`FAT Region Sectors: %d
+	fmt.Printf(`FAT Quantity: %d
+FAT Region Sectors: %d
 FAT Region offset: 0x%x
 Root Region Sectors: %d
 Root Region offset: 0x%x
@@ -433,6 +428,7 @@ Total Sectors: %d
 Cluster Count: %d
 Cluster Size: %d
 `,
+		info.FATNumber,
 		info.FATSectors,
 		info.FATOffset,
 		info.RootDirSectors,
@@ -483,7 +479,10 @@ func readReservedSector(file *os.File) (
 		info.Type = FAT32
 	}
 
-	// set number of FAT entries
+	// save sector size
+	info.SectorSize = uint32(bpb.BytesPerSector)
+
+	// save number of FAT entries
 	info.FATNumber = uint32(bpb.NFATs)
 
 	// calculate total number of sectors for volume
