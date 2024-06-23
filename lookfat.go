@@ -427,6 +427,7 @@ Data Region offset: 0x%x
 Total Sectors: %d
 Cluster Count: %d
 Cluster Size: %d
+Sector Size: %d
 `,
 		info.FATNumber,
 		info.FATSectors,
@@ -438,6 +439,7 @@ Cluster Size: %d
 		info.TotalSectors,
 		info.ClusterCount,
 		info.ClusterSize,
+		info.SectorSize,
 	)
 
 	if info.Warning != "" {
