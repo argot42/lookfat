@@ -221,6 +221,7 @@ type Flags struct {
 	printInfo     bool
 	printFAT      bool
 	filename      string
+	name          string
 }
 
 func main() {
@@ -231,6 +232,7 @@ func main() {
 	printInfo := flag.Bool("i", false, "print fs info")
 	printFAT := flag.Bool("a", false, "print all FAT entries")
 	filename := flag.String("f", "", "get content from file")
+	name := flag.String("w", "", "write stdin to file")
 
 	flag.Parse()
 
@@ -241,6 +243,7 @@ func main() {
 		printInfo:     *printInfo,
 		printFAT:      *printFAT,
 		filename:      *filename,
+		name:          *name,
 	}
 
 	if flags == (Flags{}) {
@@ -260,7 +263,7 @@ func main() {
 
 	filepath := flag.Arg(0)
 
-	file, err := os.Open(filepath)
+	file, err := os.OpenFile(filepath, os.O_RDWR, os.ModeType)
 	checkerr("", err)
 	defer file.Close()
 
@@ -270,25 +273,133 @@ func main() {
 	root, err := readDir(file, int64(info.RootDirOffset))
 	checkerr("", err)
 
-	if *printReserved {
+	if flags.printReserved {
 		pReserved(bpb, ext16, ext32, info)
 	}
-	if *printRoot {
+	if flags.printRoot {
 		pRoot(info, root)
 	}
-	if *printType {
+	if flags.printType {
 		pType(info)
 	}
-	if *printInfo {
+	if flags.printInfo {
 		pInfo(info)
 	}
-	if *printFAT {
+	if flags.printFAT {
 		pFAT(file, info)
 	}
-	if *filename != "" {
-		err = pFile(file, *filename, bpb, info, root)
+	if flags.filename != "" {
+		err = pFile(file, flags.filename, bpb, info, root)
 		checkerr("", err)
 	}
+	if flags.name != "" {
+		err = wFile(file, os.Stdin, flags.name, bpb, info, root)
+		checkerr("", err)
+	}
+}
+
+func wFile(
+	file *os.File,
+	input io.Reader,
+	name string,
+	bpb BPB,
+	info FATInfo,
+	root []EntryInfo,
+) (err error) {
+	location, err := findEmptyFAT(file, 3, info)
+	if err != nil {
+		return
+	}
+
+	fileEntry := EntryInfo{
+		ShortName: name,
+		LongName:  name,
+		//Attr:      0x01 | 0x02 | 0x04 | 0x08,
+		Attr:     0x20,
+		Location: location,
+	}
+
+	_, fatEntry := mkentry(info.Type)
+	chunk := make([]byte, info.ClusterSize)
+
+	fmt.Println("cluster size:", info.ClusterSize)
+	fmt.Printf("%d (0x%x)\n", location, int64(info.FATOffset)+int64(location)*int64(len(fatEntry)))
+
+	for {
+		// read from out input file into buffer
+		/*n, inputErr := input.Read(chunk)
+		if inputErr != nil && inputErr != io.EOF {
+			return
+		}*/
+		n, inputErr := io.ReadFull(input, chunk)
+		if inputErr != nil && inputErr != io.ErrUnexpectedEOF {
+			return inputErr
+		}
+		chunk = chunk[:n]
+		fileEntry.Size += uint32(n)
+
+		fmt.Println(string(chunk), len(chunk), cap(chunk))
+
+		// calculate file offset inside file region
+		fileOffset := getFileOffset(location, bpb, info)
+		fmt.Printf("writing to 0x%x (loc %d)\n", fileOffset, location)
+
+		// write into FS
+		if _, err = file.Seek(int64(fileOffset), io.SeekStart); err != nil {
+			return
+		}
+		if err = binary.Write(file, binary.LittleEndian, chunk); err != nil {
+			return
+		}
+
+		fatEntryOffset := getFATEntryOffset(location, len(fatEntry), info)
+
+		if inputErr == io.ErrUnexpectedEOF {
+			fatEntry = []byte{255, 255}
+			if _, err = file.Seek(fatEntryOffset, io.SeekStart); err != nil {
+				return
+			}
+			if err = binary.Write(file, binary.LittleEndian, fatEntry); err != nil {
+				return
+			}
+			break
+		} else {
+			panic("AAAAAAAH!")
+		}
+
+		/*if inputErr == io.EOF {
+		fatEntry = []byte{255, 255}
+
+		if _, err = file.Seek(fatEntryOffset, io.SeekStart); err != nil {
+			return
+		}*/
+		/*if err = binary.Write(file, binary.LittleEndian, fatEntry); err != nil {
+			return
+		}*/
+
+		/*break
+		} else {
+			next := uint32(location) + uint32(len(fatEntry))
+			location, err = findEmptyFAT(file, next, info)
+			if err != nil {
+				return
+			}
+
+			fatEntry = locToEntry(info.Type, location)
+			if _, err = file.Seek(fatEntryOffset, io.SeekStart); err != nil {
+				return
+			}*/
+		/*if err = binary.Write(file, binary.LittleEndian, fatEntry); err != nil {
+				return
+			}
+		}*/
+	}
+
+	if err = addFile(file, info, fileEntry); err != nil {
+		return
+	}
+
+	return
 }
 
 func pFAT(file *os.File, info FATInfo) (err error) {
@@ -344,11 +455,8 @@ func pFile(file *os.File, path string, bpb BPB, info FATInfo, root []EntryInfo) 
 	var b []byte
 
 	for {
-		// here we calculate the file offset inside the file region
-		// the first two clusters numbers are reserved
-		// so we substract them from the `Location` number
-		fileOffset := info.DataOffset +
-			(location-2)*uint32(bpb.SectorPerCluster)*uint32(bpb.BytesPerSector)
+		// get file offset inside the file region
+		fileOffset := getFileOffset(location, bpb, info)
 
 		// buffer to store parts of the file stored inside the fs cluster
 		chunk := make([]byte, info.ClusterSize)
@@ -813,4 +921,216 @@ func locFromEntry(t uint8, fatEntry []byte) uint32 {
 	}
 
 	panic("not a correct fat type")
+}
+
+func getFileOffset(location uint32, bpb BPB, info FATInfo) uint32 {
+	// here we calculate the file offset inside the file region
+	// the first two clusters numbers are reserved
+	// so we substract them from the `Location` number
+	return info.DataOffset + (location-2)*uint32(bpb.SectorPerCluster)*uint32(bpb.BytesPerSector)
+}
+
+func getFATEntryOffset(location uint32, entryLen int, info FATInfo) int64 {
+	return int64(info.FATOffset) + int64(entryLen)*int64(location)
+}
+
+func findEmptyFAT(file *os.File, startLoc uint32, info FATInfo) (emptyLoc uint32, err error) {
+	// this function finds the next empty location inside the FAT region
+
+	_, fatEntry := mkentry(info.Type)
+	entrySize := int64(len(fatEntry))
+	max := int64(info.FATOffset + info.FATSectors*info.FATNumber*info.SectorSize)
+
+	// move to initial offset
+	initial := int64(info.FATOffset) + int64(startLoc)*entrySize
+	if _, err = file.Seek(initial, io.SeekStart); err != nil {
+		return
+	}
+
+	/*for emptyOffset = offset; emptyOffset < max; emptyOffset += int64(len(fatEntry)) {
+		if err = binary.Read(file, binary.LittleEndian, fatEntry); err != nil {
+			return
+		}
+
+		if locFromEntry(info.Type, fatEntry) == 0 {
+			return emptyOffset, nil
+		}
+	}*/
+	for i := startLoc; int64(info.FATOffset)+int64(i)*entrySize < max; i++ {
+		if err = binary.Read(file, binary.LittleEndian, fatEntry); err != nil {
+			return
+		}
+
+		if locFromEntry(info.Type, fatEntry) == 0 {
+			return i, nil
+		}
+	}
+
+	return 0, errors.New("no more empty entries left")
+}
+
+func locToEntry(t uint8, location uint32) (entry []byte) {
+	switch t {
+	case FAT12, FAT16:
+		entry = make([]byte, 2)
+		binary.LittleEndian.PutUint16(entry, uint16(location))
+	case FAT32:
+		entry = make([]byte, 4)
+		binary.LittleEndian.PutUint32(entry, location)
+	}
+
+	return
+}
+
+func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
+	if _, err = file.Seek(int64(info.RootDirOffset), io.SeekStart); err != nil {
+		return
+	}
+
+	fmt.Println("========================")
+
+	for {
+		var entry DirEntry
+		if err = binary.Read(file, binary.LittleEndian, &entry); err != nil {
+			return
+		}
+
+		if entry.Attr != 0x0 {
+			continue
+		}
+
+		entry.Attr = fileEntry.Attr
+		/*for i, v := range []byte(fileEntry.ShortName) {
+			if i >= 11 {
+				break
+			}
+			entry.Name[i] = v
+		}*/
+		s := []byte("CHILE   TXT")
+		for i, v := range s {
+			entry.Name[i] = v
+		}
+		entry.FileSize = fileEntry.Size
+		entry.FirstClusterLO = uint16(fileEntry.Location)
+		fmt.Println(entry)
+
+		if _, err = file.Seek(-32, io.SeekCurrent); err != nil {
+			return
+		}
+		if err = binary.Write(file, binary.LittleEndian, entry); err != nil {
+			return
+		}
+
+		break
+	}
+
+	fmt.Println("========================")
+
+	return
+}
+
+var validChars = map[byte]struct{}{
+	35:  {},
+	36:  {},
+	37:  {},
+	38:  {},
+	39:  {},
+	40:  {},
+	41:  {},
+	43:  {},
+	44:  {},
+	45:  {},
+	46:  {},
+	48:  {},
+	49:  {},
+	50:  {},
+	51:  {},
+	52:  {},
+	53:  {},
+	54:  {},
+	55:  {},
+	56:  {},
+	57:  {},
+	59:  {},
+	61:  {},
+	64:  {},
+	65:  {},
+	66:  {},
+	67:  {},
+	68:  {},
+	69:  {},
+	70:  {},
+	71:  {},
+	72:  {},
+	73:  {},
+	74:  {},
+	75:  {},
+	76:  {},
+	77:  {},
+	78:  {},
+	79:  {},
+	80:  {},
+	81:  {},
+	82:  {},
+	83:  {},
+	84:  {},
+	85:  {},
+	86:  {},
+	87:  {},
+	88:  {},
+	89:  {},
+	90:  {},
+	91:  {},
+	93:  {},
+	94:  {},
+	95:  {},
+	96:  {},
+	97:  {},
+	98:  {},
+	99:  {},
+	100: {},
+	101: {},
+	102: {},
+	103: {},
+	104: {},
+	105: {},
+	106: {},
+	107: {},
+	108: {},
+	109: {},
+	110: {},
+	111: {},
+	112: {},
+	113: {},
+	114: {},
+	115: {},
+	116: {},
+	117: {},
+	118: {},
+	119: {},
+	120: {},
+	121: {},
+	122: {},
+	123: {},
+	125: {},
+	126: {},
+}
+
+func convNameSmall(name string) (small [11]uint8) {
+	for i, v := range []byte(name) {
+		if _, ok := validChars[v]; !ok {
+			small[i] = 0
+		} else {
+			small[i] = uint8(v)
+		}
+	}
+	return
+}
+
+func convNameLong(name string) (long []DirEntryLong) {
+	/*var split [][]byte
+
+	for i, v := range []byte(name) {
+	}*/
+	return
 }
