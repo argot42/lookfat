@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
 // printables
@@ -311,8 +312,13 @@ func wFile(
 		return
 	}
 
+	shortName, err := convNameSmall(name)
+	if err != nil {
+		return
+	}
+
 	fileEntry := EntryInfo{
-		ShortName: name,
+		ShortName: string(shortName),
 		LongName:  name,
 		//Attr:      0x01 | 0x02 | 0x04 | 0x08,
 		Attr:     0x20,
@@ -986,16 +992,13 @@ func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
 		}
 
 		entry.Attr = fileEntry.Attr
-		/*for i, v := range []byte(fileEntry.ShortName) {
+		for i, v := range []byte(fileEntry.ShortName) {
 			if i >= 11 {
 				break
 			}
 			entry.Name[i] = v
-		}*/
-		s := []byte("CHILE   TXT")
-		for i, v := range s {
-			entry.Name[i] = v
 		}
+
 		entry.FileSize = fileEntry.Size
 		entry.FirstClusterLO = uint16(fileEntry.Location)
 		fmt.Println(entry)
@@ -1102,15 +1105,54 @@ var validChars = map[byte]struct{}{
 	126: {},
 }
 
-func convNameSmall(name string) (small [11]uint8) {
-	for i, v := range []byte(name) {
-		if _, ok := validChars[v]; !ok {
-			small[i] = 0
-		} else {
-			small[i] = uint8(v)
+func convNameSmall(name string) (small []byte, err error) {
+	small = make([]byte, 11)
+	b := []byte(name)
+
+	if len(b) == 0 {
+		return small, errors.New("name should at least have one character")
+	}
+
+	switch b[0] {
+	case 0x20:
+		return small, errors.New("name cannot start with '.'")
+	}
+
+	splitted := strings.SplitN(name, ".", 2)
+
+	namePart := make([]byte, 8)
+	parted(splitted[0], namePart)
+
+	extPart := make([]byte, 3)
+
+	if len(splitted) == 1 {
+		parted("", extPart)
+	} else {
+		parted(splitted[1], extPart)
+	}
+
+	for i, v := range namePart {
+		small[i] = v
+	}
+	for i, v := range extPart {
+		small[i+8] = v
+	}
+
+	return small, nil
+}
+
+func parted(og string, part []byte) {
+	for i, v := range []byte(strings.ToUpper(og)) {
+		if i == len(part) {
+			break
+		}
+		part[i] = v
+	}
+	for i, v := range part {
+		if v == 0x0 {
+			part[i] = 0x20
 		}
 	}
-	return
 }
 
 func convNameLong(name string) (long []DirEntryLong) {
