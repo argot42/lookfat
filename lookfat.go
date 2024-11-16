@@ -319,18 +319,11 @@ func wFile(
 		Location: location,
 	}
 
-	_, fatEntry := mkentry(info.Type)
+	eof, fatEntry := mkentry(info.Type)
 	chunk := make([]byte, info.ClusterSize)
-
-	fmt.Println("cluster size:", info.ClusterSize)
-	fmt.Printf("%d (0x%x)\n", location, int64(info.FATOffset)+int64(location)*int64(len(fatEntry)))
 
 	for {
 		// read from out input file into buffer
-		/*n, inputErr := input.Read(chunk)
-		if inputErr != nil && inputErr != io.EOF {
-			return
-		}*/
 		n, inputErr := io.ReadFull(input, chunk)
 		if inputErr != nil && inputErr != io.ErrUnexpectedEOF {
 			return inputErr
@@ -338,63 +331,47 @@ func wFile(
 		chunk = chunk[:n]
 		fileEntry.Size += uint32(n)
 
-		fmt.Println(string(chunk), len(chunk), cap(chunk))
-
 		// calculate file offset inside file region
 		fileOffset := getFileOffset(location, bpb, info)
-		fmt.Printf("writing to 0x%x (loc %d)\n", fileOffset, location)
 
 		// write into FS
-		if _, err = file.Seek(int64(fileOffset), io.SeekStart); err != nil {
+		if err = writeAt(file, int64(fileOffset), chunk); err != nil {
 			return
 		}
-		if err = binary.Write(file, binary.LittleEndian, chunk); err != nil {
-			return
-		}
-
-		fatEntryOffset := getFATEntryOffset(location, len(fatEntry), info)
 
 		if inputErr == io.ErrUnexpectedEOF {
-			fatEntry = []byte{255, 255}
-			if _, err = file.Seek(fatEntryOffset, io.SeekStart); err != nil {
+			// this means we reached the EOF and we have to write the last
+			// entry into the FAT region
+			putLocToEntry(info.Type, fatEntry, eof)
+
+			fatEntryOffset := getFATEntryOffset(location, len(fatEntry), info)
+
+			if err = writeAt(file, fatEntryOffset, fatEntry); err != nil {
 				return
 			}
-			if err = binary.Write(file, binary.LittleEndian, fatEntry); err != nil {
-				return
-			}
+
 			break
 		} else {
-			panic("AAAAAAAH!")
-		}
+			// file is not entirely read yeat so we find new empty fat entry
+			// we save it into our old location and continue with our new location
+			oldLoc := location
 
-		/*if inputErr == io.EOF {
-		fatEntry = []byte{255, 255}
-
-		if _, err = file.Seek(fatEntryOffset, io.SeekStart); err != nil {
-			return
-		}*/
-		/*if err = binary.Write(file, binary.LittleEndian, fatEntry); err != nil {
-			return
-		}*/
-
-		/*break
-		} else {
-			next := uint32(location) + uint32(len(fatEntry))
-			location, err = findEmptyFAT(file, next, info)
+			location, err = findEmptyFAT(file, location+1, info)
 			if err != nil {
 				return
 			}
 
-			fatEntry = locToEntry(info.Type, location)
-			if _, err = file.Seek(fatEntryOffset, io.SeekStart); err != nil {
-				return
-			}*/
-		/*if err = binary.Write(file, binary.LittleEndian, fatEntry); err != nil {
+			putLocToEntry(info.Type, fatEntry, location)
+
+			fatEntryOffset := getFATEntryOffset(oldLoc, len(fatEntry), info)
+
+			if err = writeAt(file, fatEntryOffset, fatEntry); err != nil {
 				return
 			}
-		}*/
+		}
 	}
 
+	// lastly we add file entry to root region
 	if err = addFile(file, info, fileEntry); err != nil {
 		return
 	}
@@ -982,6 +959,15 @@ func locToEntry(t uint8, location uint32) (entry []byte) {
 	return
 }
 
+func putLocToEntry(t uint8, entry []byte, location uint32) {
+	switch t {
+	case FAT12, FAT16:
+		binary.LittleEndian.PutUint16(entry, uint16(location))
+	case FAT32:
+		binary.LittleEndian.PutUint32(entry, location)
+	}
+}
+
 func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
 	if _, err = file.Seek(int64(info.RootDirOffset), io.SeekStart); err != nil {
 		return
@@ -1132,5 +1118,15 @@ func convNameLong(name string) (long []DirEntryLong) {
 
 	for i, v := range []byte(name) {
 	}*/
+	return
+}
+
+func writeAt(r io.WriteSeeker, offset int64, data any) (err error) {
+	if _, err = r.Seek(offset, io.SeekStart); err != nil {
+		return
+	}
+	if err = binary.Write(r, binary.LittleEndian, data); err != nil {
+		return
+	}
 	return
 }

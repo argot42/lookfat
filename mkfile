@@ -12,3 +12,9 @@ mount32:V:
 
 drive:V:
     doas mount -o loop -t vfat pendrive32.dat -o 'uid=1000,gid=1000' mnt
+
+reset:V:
+    doas umount mnt &>/dev/null; cp fat16.dat wfat16.dat
+
+unmount:V:
+    doas umount mnt
