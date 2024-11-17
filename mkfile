@@ -8,13 +8,13 @@ mountbsd:V:
     doas mount -o loop -t vfat fat16*openbsd*.dat -o 'uid=1000,gid=1000' mnt
 
 mount32:V:
-    doas mount -o loop -t vfat fat32.dat -o 'uid=1000,gid=1000' mnt
+    doas mount -o loop -t vfat wfat32.dat -o 'uid=1000,gid=1000' mnt
 
 drive:V:
     doas mount -o loop -t vfat pendrive32.dat -o 'uid=1000,gid=1000' mnt
 
 reset:V:
-    doas umount mnt &>/dev/null; cp fat16.dat wfat16.dat
+    cp fat16.dat wfat16.dat; cp fat32.dat wfat32.dat
 
 unmount:V:
     doas umount mnt

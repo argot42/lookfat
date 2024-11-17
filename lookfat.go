@@ -902,8 +902,28 @@ func locFromEntry(t uint8, fatEntry []byte) uint32 {
 	case FAT32:
 		return binary.LittleEndian.Uint32(fatEntry)
 	}
-
 	panic("not a correct fat type")
+}
+
+func locToEntry(t uint8, location uint32) (entry []byte) {
+	switch t {
+	case FAT12, FAT16:
+		entry = make([]byte, 2)
+		binary.LittleEndian.PutUint16(entry, uint16(location))
+	case FAT32:
+		entry = make([]byte, 4)
+		binary.LittleEndian.PutUint32(entry, location)
+	}
+	return
+}
+
+func putLocToEntry(t uint8, entry []byte, location uint32) {
+	switch t {
+	case FAT12, FAT16:
+		binary.LittleEndian.PutUint16(entry, uint16(location))
+	case FAT32:
+		binary.LittleEndian.PutUint32(entry, location)
+	}
 }
 
 func getFileOffset(location uint32, bpb BPB, info FATInfo) uint32 {
@@ -930,15 +950,6 @@ func findEmptyFAT(file *os.File, startLoc uint32, info FATInfo) (emptyLoc uint32
 		return
 	}
 
-	/*for emptyOffset = offset; emptyOffset < max; emptyOffset += int64(len(fatEntry)) {
-		if err = binary.Read(file, binary.LittleEndian, fatEntry); err != nil {
-			return
-		}
-
-		if locFromEntry(info.Type, fatEntry) == 0 {
-			return emptyOffset, nil
-		}
-	}*/
 	for i := startLoc; int64(info.FATOffset)+int64(i)*entrySize < max; i++ {
 		if err = binary.Read(file, binary.LittleEndian, fatEntry); err != nil {
 			return
@@ -950,28 +961,6 @@ func findEmptyFAT(file *os.File, startLoc uint32, info FATInfo) (emptyLoc uint32
 	}
 
 	return 0, errors.New("no more empty entries left")
-}
-
-func locToEntry(t uint8, location uint32) (entry []byte) {
-	switch t {
-	case FAT12, FAT16:
-		entry = make([]byte, 2)
-		binary.LittleEndian.PutUint16(entry, uint16(location))
-	case FAT32:
-		entry = make([]byte, 4)
-		binary.LittleEndian.PutUint32(entry, location)
-	}
-
-	return
-}
-
-func putLocToEntry(t uint8, entry []byte, location uint32) {
-	switch t {
-	case FAT12, FAT16:
-		binary.LittleEndian.PutUint16(entry, uint16(location))
-	case FAT32:
-		binary.LittleEndian.PutUint32(entry, location)
-	}
 }
 
 func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
