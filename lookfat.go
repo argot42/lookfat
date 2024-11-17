@@ -312,7 +312,7 @@ func wFile(
 		return
 	}
 
-	shortName, err := convNameSmall(name)
+	shortName, err := convNameShort(name)
 	if err != nil {
 		return
 	}
@@ -1105,17 +1105,17 @@ var validChars = map[byte]struct{}{
 	126: {},
 }
 
-func convNameSmall(name string) (small []byte, err error) {
-	small = make([]byte, 11)
+func convNameShort(name string) (short []byte, err error) {
+	short = make([]byte, 11)
 	b := []byte(name)
 
 	if len(b) == 0 {
-		return small, errors.New("name should at least have one character")
+		return short, errors.New("name should at least have one character")
 	}
 
 	switch b[0] {
 	case 0x20:
-		return small, errors.New("name cannot start with '.'")
+		return short, errors.New("name cannot start with '.'")
 	}
 
 	splitted := strings.SplitN(name, ".", 2)
@@ -1132,13 +1132,13 @@ func convNameSmall(name string) (small []byte, err error) {
 	}
 
 	for i, v := range namePart {
-		small[i] = v
+		short[i] = v
 	}
 	for i, v := range extPart {
-		small[i+8] = v
+		short[i+8] = v
 	}
 
-	return small, nil
+	return short, nil
 }
 
 func parted(og string, part []byte) {
