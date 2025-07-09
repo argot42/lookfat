@@ -208,6 +208,37 @@ type EntryInfo struct {
 	Size      uint32
 }
 
+// legal file attributes
+const (
+	AttrRO     = 0x01 // file cannot be modified - all modification requests should fail
+	AttrHidden = 0x02 // the file or subdir should not be listed unless explicitly requested
+	AttrSystem = 0x04 // same as above but the request should be about "system files"
+	// The corresponding entry contains the volume
+	// label. DIR_FstClusHI and DIR_FstClusLO
+	// must always be 0 for the corresponding entry
+	// (representing the volume label) since no
+	// clusters can be allocated for this entry.
+	// Only the root directory (see Section 6.x below)
+	// can contain one entry with this attribute. No
+	// sub-directory must contain an entry of this type.
+	// Entries representing long file names (see
+	// Section 7) are exceptions to these rules.
+	AttrVolID = 0x08
+	// The corresponding entry represents a directory
+	// (a child or sub-directory to the containing
+	// directory).
+	// DIR_FileSize for the corresponding entry
+	// must always be 0 (even though clusters may
+	// have been allocated for the directory).
+	AttrDir = 0x10
+	// documentation says this should be set when when the file is
+	// created, renamed, or modified but it seems to be used for regular files, idk
+	AttrArchive  = 0x20
+	AttrLongName = AttrRO | AttrHidden | AttrSystem | AttrVolID // long filename entry
+
+	AttrEnd = 0x0 // not a real attribute
+)
+
 const (
 	FAT12 = iota
 	FAT16
@@ -321,9 +352,8 @@ func wFile(
 	fileEntry := EntryInfo{
 		ShortName: string(shortName),
 		LongName:  name,
-		//Attr:      0x01 | 0x02 | 0x04 | 0x08,
-		Attr:     0x20,
-		Location: location,
+		Attr:      0x20,
+		Location:  location,
 	}
 
 	eof, fatEntry := mkentry(info.Type)
@@ -723,9 +753,9 @@ OUT:
 		var entryInfo EntryInfo
 
 		switch attr {
-		case 0x0: // end of entries
+		case AttrEnd: // end of entries
 			break OUT
-		case 0x28, 0x8: // volume id
+		case AttrVolID | AttrArchive, AttrVolID: // volume id
 			var entry DirEntry
 			if err = binary.Read(file, binary.LittleEndian, &entry); err != nil {
 				return
@@ -736,12 +766,17 @@ OUT:
 				name = append(name, v)
 			}
 
+			creationTime := fatTimeToTime(entry.CDate, entry.CTime)
+			writeTime := fatTimeToTime(entry.WDate, entry.WTime)
+
 			entryInfo = EntryInfo{
 				ShortName: string(name),
 				Attr:      entry.Attr,
+				Crt:       creationTime,
+				Mod:       writeTime,
 			}
 
-		case 0xf: // long filename
+		case AttrLongName: // long filename
 			var entry DirEntryLong
 
 			if err = binary.Read(file, binary.LittleEndian, &entry); err != nil {
@@ -995,13 +1030,10 @@ func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
 		}
 
 		// write date/time
-		now := time.Now()
+		entry.WDate, entry.WTime = timeToFatTime(time.Now().UTC())
 
-		year, month, day := now.Date()
-		hours, minutes, seconds := now.Hour(), now.Minute(), now.Second()
-
-		entry.WDate = uint16(year-1980)<<0x9 | uint16(month)<<0x5 | uint16(day)
-		entry.WTime = uint16(hours)<<0xb | uint16(minutes)<<0x5 | uint16(seconds/2)
+		// creation date/time
+		entry.CDate, entry.CTime = entry.WDate, entry.WTime
 
 		// file size and first cluster
 		entry.FileSize = fileEntry.Size
@@ -1191,6 +1223,16 @@ func fatTimeToTime(d, t uint16) time.Time {
 		int(minutes),
 		int(seconds),
 		0,
-		time.Local,
+		time.UTC,
 	)
+}
+
+func timeToFatTime(t time.Time) (date, time uint16) {
+	year, month, day := t.Date()
+	hours, minutes, seconds := t.Hour(), t.Minute(), t.Second()
+
+	date = uint16(year-1980)<<0x9 | uint16(month)<<0x5 | uint16(day)
+	time = uint16(hours)<<0xb | uint16(minutes)<<0x5 | uint16(seconds/2)
+
+	return date, time
 }
