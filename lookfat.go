@@ -202,10 +202,10 @@ type EntryInfo struct {
 	ShortName string
 	LongName  string
 	Attr      HexByte
-	//Crt      time.Time
-	//Mod      time.Time
-	Location uint32
-	Size     uint32
+	Crt       time.Time
+	Mod       time.Time
+	Location  uint32
+	Size      uint32
 }
 
 const (
@@ -306,7 +306,7 @@ func wFile(
 	name string,
 	bpb BPB,
 	info FATInfo,
-	root []EntryInfo,
+	_ []EntryInfo,
 ) (err error) {
 	location, err := findEmptyFAT(file, 3, info)
 	if err != nil {
@@ -490,7 +490,7 @@ func pReserved(bpb BPB, ext16 BPBExt16, ext32 BPBExt32, info FATInfo) {
 	}
 }
 
-func pRoot(info FATInfo, root []EntryInfo) {
+func pRoot(_ FATInfo, root []EntryInfo) {
 	fmt.Println("files in root dir:")
 	for _, v := range root {
 		fmt.Printf("%+v\n", v)
@@ -797,11 +797,15 @@ OUT:
 				shortName = append(shortName, v)
 			}
 
+			writeTime := fatTimeToTime(short.WDate, short.WTime)
+
 			entryInfo = EntryInfo{
 				ShortName: string(shortName),
 				Attr:      short.Attr,
 				Location:  uint32(short.FirstClusterHI)<<16 + uint32(short.FirstClusterLO),
 				Size:      short.FileSize,
+				Crt:       writeTime,
+				Mod:       writeTime,
 			}
 
 			// if there's a checksum saved add long filename to the entry
@@ -981,6 +985,7 @@ func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
 			continue
 		}
 
+		// copy short name to dir entry
 		entry.Attr = fileEntry.Attr
 		for i, v := range []byte(fileEntry.ShortName) {
 			if i >= 11 {
@@ -989,7 +994,7 @@ func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
 			entry.Name[i] = v
 		}
 
-		// write date/time (only required)
+		// write date/time
 		now := time.Now()
 
 		year, month, day := now.Date()
@@ -998,8 +1003,10 @@ func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
 		entry.WDate = uint16(year-1980)<<0x9 | uint16(month)<<0x5 | uint16(day)
 		entry.WTime = uint16(hours)<<0xb | uint16(minutes)<<0x5 | uint16(seconds/2)
 
+		// file size and first cluster
 		entry.FileSize = fileEntry.Size
 		entry.FirstClusterLO = uint16(fileEntry.Location)
+
 		fmt.Println(entry)
 
 		if _, err = file.Seek(-32, io.SeekCurrent); err != nil {
@@ -1154,13 +1161,13 @@ func parted(og string, part []byte) {
 	}
 }
 
-func convNameLong(name string) (long []DirEntryLong) {
-	/*var split [][]byte
+/*func convNameLong(name string) (long []DirEntryLong) {
+	var split [][]byte
 
 	for i, v := range []byte(name) {
-	}*/
+	}
 	return
-}
+}*/
 
 func writeAt(r io.WriteSeeker, offset int64, data any) (err error) {
 	if _, err = r.Seek(offset, io.SeekStart); err != nil {
@@ -1170,4 +1177,20 @@ func writeAt(r io.WriteSeeker, offset int64, data any) (err error) {
 		return
 	}
 	return
+}
+
+func fatTimeToTime(d, t uint16) time.Time {
+	year, month, day := (d>>0x9)+1980, d>>0x5&0xf, d&0x1f
+	hours, minutes, seconds := t>>0xb, t>>0x5&0x3f, d&0x1f
+
+	return time.Date(
+		int(year),
+		time.Month(month),
+		int(day),
+		int(hours),
+		int(minutes),
+		int(seconds),
+		0,
+		time.Local,
+	)
 }
