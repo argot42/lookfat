@@ -1,3 +1,7 @@
 *.dat
+*.img
+*.dmg
 bin
 mnt
+lookfat
+media/*

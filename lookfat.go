@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // printables
@@ -987,6 +988,15 @@ func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
 			}
 			entry.Name[i] = v
 		}
+
+		// write date/time (only required)
+		now := time.Now()
+
+		year, month, day := now.Date()
+		hours, minutes, seconds := now.Hour(), now.Minute(), now.Second()
+
+		entry.WDate = uint16(year-1980)<<0x9 | uint16(month)<<0x5 | uint16(day)
+		entry.WTime = uint16(hours)<<0xb | uint16(minutes)<<0x5 | uint16(seconds/2)
 
 		entry.FileSize = fileEntry.Size
 		entry.FirstClusterLO = uint16(fileEntry.Location)
