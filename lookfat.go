@@ -1227,20 +1227,9 @@ func convNameLong(name, shortName string) (entries []DirEntryLong, err error) {
 		lower := i * chunkSize
 		upper := lower + chunkSize
 
-		part := nameBytes[lower:upper]
-
 		j := nparts - i - 1 // reverse index
 
-		for k, c := range part {
-			switch {
-			case k >= 0 && k <= 4:
-				entries[j].Name1[k*2] = c
-			case k >= 5 && k <= 10:
-				entries[j].Name2[(k-5)*2] = c
-			case k >= 11 && k <= 12:
-				entries[j].Name3[(k-11)*2] = c
-			}
-		}
+		longNameInsert(&entries[j], nameBytes[lower:upper])
 
 		entries[j].Attr = AttrLongName
 		entries[j].Checksum = chksm
@@ -1258,16 +1247,7 @@ func convNameLong(name, shortName string) (entries []DirEntryLong, err error) {
 		Checksum: chksm,
 	}
 
-	for i, c := range nameBytes[nparts*chunkSize:] {
-		switch {
-		case i >= 0 && i <= 4:
-			lastEntry.Name1[i*2] = c
-		case i >= 5 && i <= 10:
-			lastEntry.Name2[(i-5)*2] = c
-		case i >= 11 && i <= 12:
-			lastEntry.Name3[(i-11)*2] = c
-		}
-	}
+	longNameInsert(&lastEntry, nameBytes[nparts*chunkSize:])
 
 	entries = append([]DirEntryLong{lastEntry}, entries...)
 
