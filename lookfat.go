@@ -239,6 +239,11 @@ const (
 	AttrEnd = 0x0 // not a real attribute
 )
 
+// long filename
+const (
+	LastEntryLong = 0x40
+)
+
 const (
 	FAT12 = iota
 	FAT16
@@ -1005,7 +1010,7 @@ func findEmptyFAT(file *os.File, startLoc uint32, info FATInfo) (emptyLoc uint32
 
 func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
 	if _, err = file.Seek(int64(info.RootDirOffset), io.SeekStart); err != nil {
-		return
+		return err
 	}
 
 	fmt.Println("========================")
@@ -1013,11 +1018,14 @@ func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
 	for {
 		var entry DirEntry
 		if err = binary.Read(file, binary.LittleEndian, &entry); err != nil {
-			return
+			return err
 		}
 
 		if entry.Attr != 0x0 {
 			continue
+		}
+		if _, err = file.Seek(-32, io.SeekCurrent); err != nil {
+			return err
 		}
 
 		// copy short name to dir entry
@@ -1039,14 +1047,23 @@ func addFile(file *os.File, info FATInfo, fileEntry EntryInfo) (err error) {
 		entry.FileSize = fileEntry.Size
 		entry.FirstClusterLO = uint16(fileEntry.Location)
 
-		fmt.Println(entry)
+		longEntries, err := convNameLong(fileEntry.LongName, fileEntry.ShortName)
+		if err != nil {
+			return err
+		}
 
-		if _, err = file.Seek(-32, io.SeekCurrent); err != nil {
-			return
+		for _, e := range longEntries {
+			if err = binary.Write(file, binary.LittleEndian, e); err != nil {
+				return err
+			}
 		}
+
 		if err = binary.Write(file, binary.LittleEndian, entry); err != nil {
-			return
+			return err
 		}
+
+		fmt.Println(longEntries)
+		fmt.Println(entry)
 
 		break
 	}
@@ -1193,13 +1210,82 @@ func parted(og string, part []byte) {
 	}
 }
 
-/*func convNameLong(name string) (long []DirEntryLong) {
-	var split [][]byte
-
-	for i, v := range []byte(name) {
+func convNameLong(name, shortName string) (entries []DirEntryLong, err error) {
+	chksm, err := checksum([]byte(shortName))
+	if err != nil {
+		return []DirEntryLong{}, err
 	}
-	return
-}*/
+
+	const chunkSize = 13
+
+	nameBytes := []byte(name)
+	nparts := len(nameBytes) / chunkSize
+
+	entries = make([]DirEntryLong, nparts)
+
+	for i := 0; i < nparts; i++ {
+		lower := i * chunkSize
+		upper := lower + chunkSize
+
+		part := nameBytes[lower:upper]
+
+		j := nparts - i - 1 // reverse index
+
+		for k, c := range part {
+			switch {
+			case k >= 0 && k <= 4:
+				entries[j].Name1[k*2] = c
+			case k >= 5 && k <= 10:
+				entries[j].Name2[(k-5)*2] = c
+			case k >= 11 && k <= 12:
+				entries[j].Name3[(k-11)*2] = c
+			}
+		}
+
+		entries[j].Attr = AttrLongName
+		entries[j].Checksum = chksm
+		entries[j].Ordinal = HexByte(i + 1)
+	}
+
+	if nparts != 0 && nparts%chunkSize == 0 {
+		entries[0].Ordinal = entries[0].Ordinal | 0x40
+		return entries, nil
+	}
+
+	lastEntry := DirEntryLong{
+		Attr:     AttrLongName,
+		Ordinal:  HexByte(nparts+1) | 0x40,
+		Checksum: chksm,
+	}
+
+	for i, c := range nameBytes[nparts*chunkSize:] {
+		switch {
+		case i >= 0 && i <= 4:
+			lastEntry.Name1[i*2] = c
+		case i >= 5 && i <= 10:
+			lastEntry.Name2[(i-5)*2] = c
+		case i >= 11 && i <= 12:
+			lastEntry.Name3[(i-11)*2] = c
+		}
+	}
+
+	entries = append([]DirEntryLong{lastEntry}, entries...)
+
+	return entries, nil
+}
+
+func longNameInsert(entry *DirEntryLong, part []byte) {
+	for i, c := range part {
+		switch {
+		case i >= 0 && i <= 4:
+			entry.Name1[i*2] = c
+		case i >= 5 && i <= 10:
+			entry.Name2[(i-5)*2] = c
+		case i >= 11 && i <= 12:
+			entry.Name3[(i-11)*2] = c
+		}
+	}
+}
 
 func writeAt(r io.WriteSeeker, offset int64, data any) (err error) {
 	if _, err = r.Seek(offset, io.SeekStart); err != nil {
@@ -1235,4 +1321,16 @@ func timeToFatTime(t time.Time) (date, time uint16) {
 	time = uint16(hours)<<0xb | uint16(minutes)<<0x5 | uint16(seconds/2)
 
 	return date, time
+}
+
+func checksum(shortName []byte) (sum uint8, err error) {
+	if len(shortName) != 11 {
+		return 0, errors.New("short name too long")
+	}
+
+	for _, c := range shortName {
+		sum = 0x80*(sum&1) + (sum >> 1) + c
+	}
+
+	return sum, nil
 }
